@@ -17,9 +17,9 @@ Codex CLI:
 Run these commands from the repository root:
 
 ```bash
-./codex-container.sh --build  # Build or refresh the local image
+./codex-container.sh --container-build  # Build or refresh the local image
 ./codex-container.sh          # Start Codex in the current workspace
-./codex-container.sh --shell  # Open a shell in the runtime image
+./codex-container.sh --container-shell  # Open a shell in the runtime image
 bash -n codex-container.sh    # Validate Bash syntax
 git diff --check              # Detect whitespace errors
 ```
@@ -34,13 +34,16 @@ arrays for commands with user-controlled arguments. Keep functions small and
 fail with actionable messages. Use two- or four-space indentation consistently
 within a block, lower-case `snake_case` for local shell variables, and
 upper-case names for environment/configuration variables. Keep image and file
-names descriptive and lowercase (`Containerfile`, `codex-container.sh`).
+names descriptive and lowercase (`Containerfile`, `codex-container.sh`). Write
+all documentation, code comments, help text, and user-facing messages in
+English.
 
 ## Testing Guidelines
 
 There is no test framework yet. Every script change must pass `bash -n` and
-`git diff --check`; when Podman is available, verify `--help`, image build,
-Codex startup, persistence of `~/.codex`, and a child `podman run`. Avoid
+`git diff --check`; when Podman is available, verify `--container-help`, Codex
+argument forwarding, image build, Codex startup, persistence of `~/.codex`,
+and a child `podman run`. Avoid
 embedding credentials or relying on a remote Git repository in tests.
 
 ## Commit & Pull Request Guidelines

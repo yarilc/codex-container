@@ -8,10 +8,17 @@ WORKSPACE="$(pwd -P)"
 
 usage() {
     cat <<'EOF'
-Usage: codex-container.sh [--build] [--shell] [codex arguments...]
+Usage: codex-container.sh [container option] [codex arguments...]
 
 Runs Codex in a Podman container. The current directory and ~/.codex are
 mounted read/write. Podman inside the container uses the host rootless socket.
+
+Container options:
+  --container-build      build or refresh the container image before starting
+  --container-shell      open a shell instead of starting Codex
+  --container-help       show this wrapper help
+
+All other arguments are passed to Codex unchanged.
 
 Environment:
   CODEX_CONTAINER_IMAGE  image name (default: localhost/codex-cli:latest)
@@ -44,10 +51,9 @@ shell_mode=0
 args=()
 while (($#)); do
     case "$1" in
-        --build) build_image=1; shift ;;
-        --shell) shell_mode=1; shift ;;
-        -h|--help) usage; exit 0 ;;
-        --) shift; args+=("$@"); break ;;
+        --container-build) build_image=1; shift ;;
+        --container-shell) shell_mode=1; shift ;;
+        --container-help) usage; exit 0 ;;
         *) args+=("$1"); shift ;;
     esac
 done

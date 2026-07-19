@@ -9,12 +9,24 @@ tests and builds without running a nested daemon.
 ```bash
 chmod +x codex-container.sh
 podman system service --time=0 unix:///run/user/$(id -u)/podman/podman.sock &
-./codex-container.sh --build
+./codex-container.sh --container-build
 ./codex-container.sh
 ./codex-container.sh exec --full-auto
-./codex-container.sh --shell
+./codex-container.sh --container-shell
+./codex-container.sh --container-help
 CODEX_YOLO=1 ./codex-container.sh
 ```
+
+The wrapper is designed to replace the `codex` command through a shell alias:
+
+```bash
+alias codex=/absolute/path/to/codex-container.sh
+```
+
+Only `--container-build`, `--container-shell`, and `--container-help` are
+handled by the wrapper. Every other argument is forwarded unchanged, so
+`codex --help`, `codex resume --last`, and other normal Codex invocations keep
+their original meaning.
 
 Each container is named from the last component of the current directory and
 the next highest numeric index among running instances, for example
