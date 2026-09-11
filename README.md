@@ -17,6 +17,19 @@ podman system service --time=0 unix:///run/user/$(id -u)/podman/podman.sock &
 CODEX_YOLO=1 ./codex-container.sh
 ```
 
+OpenSpec is installed globally in the image. Initialize it once in each
+workspace where you want to use spec-driven development:
+
+```bash
+./codex-container.sh --container-shell
+cd /absolute/path/to/your-project
+openspec init
+```
+
+After initialization, use the generated OpenSpec instructions from Codex,
+including `/opsx:explore` and `/opsx:propose`. Refresh them with
+`openspec update` after upgrading OpenSpec.
+
 The wrapper is designed to replace the `codex` command through a shell alias:
 
 ```bash
@@ -47,8 +60,8 @@ SSH clients or remote repository configuration.
 
 ## Included Tools
 
-The image includes Node.js/npm and Codex CLI, the Podman client, local Git,
-Bash, search and editing tools (`ripgrep`, `grep`, `sed`, `gawk`, `find`,
+The image includes Node.js/npm, Codex CLI, and the OpenSpec CLI (`openspec`),
+the Podman client, local Git, Bash, search and editing tools (`ripgrep`, `grep`, `sed`, `gawk`, `find`,
 `patch`, `diff`), archive tools (`tar`, `gzip`, `bzip2`, `xz`, `zip`, `unzip`),
 JSON support (`jq`), HTTP/TLS support (`curl`, CA certificates), diagnostics
 (`procps`, `util-linux`, `file`, `less`), and standard POSIX utilities.

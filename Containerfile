@@ -29,7 +29,9 @@ RUN apt-get update \
         util-linux \
         xz-utils \
         zip \
-    && npm install --global --omit=dev @openai/codex \
+    && npm install --global --omit=dev \
+        @fission-ai/openspec@latest \
+        @openai/codex \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /root/.npm \
     && mkdir -p /codex-home \
