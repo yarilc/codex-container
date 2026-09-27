@@ -7,6 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         bash \
+        bubblewrap \
         bzip2 \
         ca-certificates \
         coreutils \
@@ -22,6 +23,7 @@ RUN apt-get update \
         patch \
         podman \
         procps \
+        python3 \
         ripgrep \
         sed \
         tar \

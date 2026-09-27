@@ -60,8 +60,9 @@ SSH clients or remote repository configuration.
 
 ## Included Tools
 
-The image includes Node.js/npm, Codex CLI, and the OpenSpec CLI (`openspec`),
-the Podman client, local Git, Bash, search and editing tools (`ripgrep`, `grep`, `sed`, `gawk`, `find`,
-`patch`, `diff`), archive tools (`tar`, `gzip`, `bzip2`, `xz`, `zip`, `unzip`),
-JSON support (`jq`), HTTP/TLS support (`curl`, CA certificates), diagnostics
-(`procps`, `util-linux`, `file`, `less`), and standard POSIX utilities.
+The image includes Node.js/npm, Python 3, Codex CLI, the OpenSpec CLI
+(`openspec`), the Podman client, Bubblewrap (`bwrap`), local Git, Bash, search
+and editing tools (`ripgrep`, `grep`, `sed`, `gawk`, `find`, `patch`, `diff`),
+archive tools (`tar`, `gzip`, `bzip2`, `xz`, `zip`, `unzip`), JSON support
+(`jq`), HTTP/TLS support (`curl`, CA certificates), diagnostics (`procps`,
+`util-linux`, `file`, `less`), and standard POSIX utilities.
