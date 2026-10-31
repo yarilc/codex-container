@@ -10,12 +10,15 @@ usage() {
     cat <<'EOF'
 Usage: codex-container.sh [container option] [codex arguments...]
 
-Runs Codex in a Podman container. The current directory and ~/.codex are
-mounted read/write. Podman inside the container uses the host rootless socket.
+Runs Codex in a Podman container. The current directory (or its parent with
+--container-git-worktree) and ~/.codex are mounted read/write. Podman inside
+the container uses the host rootless socket.
 
 Container options:
   --container-build      build or refresh the container image before starting
   --container-shell      open a shell instead of starting Codex
+  --container-git-worktree mount the parent of the current physical directory
+                         read/write; the container starts in the current directory
   --container-help       show this wrapper help
 
 All other arguments are passed to Codex unchanged.
@@ -48,15 +51,22 @@ container_name() {
 
 build_image=0
 shell_mode=0
+git_worktree=0
 args=()
 while (($#)); do
     case "$1" in
         --container-build) build_image=1; shift ;;
         --container-shell) shell_mode=1; shift ;;
+        --container-git-worktree) git_worktree=1; shift ;;
         --container-help) usage; exit 0 ;;
         *) args+=("$1"); shift ;;
     esac
 done
+
+workspace_mount="$WORKSPACE"
+if ((git_worktree)); then
+    workspace_mount="$(dirname -- "$WORKSPACE")"
+fi
 
 command -v podman >/dev/null || die "podman is not installed on the host"
 [[ -d "$CODEX_DIR" ]] || mkdir -p "$CODEX_DIR"
@@ -87,7 +97,7 @@ podman_args=(
     --env HOME=/codex-home
     --env CODEX_HOME=/codex-home/.codex
     --env CONTAINER_HOST=unix:///run/podman/podman.sock
-    --volume "$WORKSPACE:$WORKSPACE:rw"
+    --volume "$workspace_mount:$workspace_mount:rw"
     --volume "$CODEX_DIR:/codex-home/.codex:rw"
     --volume "$socket:/run/podman/podman.sock"
 )
