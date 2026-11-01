@@ -104,12 +104,20 @@ you will launch the wrapper:
 
 ```bash
 test -S "/run/user/$(id -u)/podman/podman.sock" && echo "Socket exists"
-podman --remote --url "unix:///run/user/$(id -u)/podman/podman.sock" info
+podman --remote --url "unix:///run/user/$(id -u)/podman/podman.sock" info \
+    --format '{{.Host.Security.Rootless}}'
 ```
 
-Continue only if the socket exists and the API command succeeds. A socket
-file alone does not prove that a service is listening. If the API command
-fails, check the systemd status or the foreground service output above.
+Continue only if the socket exists and the API command succeeds and prints
+exactly `true`. A socket file alone does not prove that a service is listening
+or that its engine is rootless. With `CODEX_CONTAINER_PODMAN=1`, the wrapper
+automatically queries this exact socket before image inspection, building,
+or startup, in both Codex and shell modes, including `--container-build`.
+It rejects rootful services, failed queries, and empty or unexpected results.
+If the API command fails, check socket permissions, the systemd status, or
+the foreground service output above. If it prints `false`, start the service
+as your normal non-root user. If the result is empty or unexpected, check
+that the service supports reporting `Host.Security.Rootless` as `true`.
 See also the official
 [Podman API service documentation](https://docs.podman.io/en/latest/markdown/podman-system-service.1.html).
 

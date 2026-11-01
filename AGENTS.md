@@ -27,6 +27,10 @@ openspec validate --specs --strict      # Validate main specifications
 Host rootless Podman is required to build and launch the runtime. Only sessions
 using `CODEX_CONTAINER_PODMAN=1` require the API socket; start it with
 `podman system service --time=0 unix:///run/user/$(id -u)/podman/podman.sock`.
+Enabled sessions query that exact socket and require `Host.Security.Rootless`
+to report `true` before image inspection, building, or startup. Rootful,
+unreachable, or unverifiable services produce an actionable error in both
+Codex and shell modes, including `--container-build`.
 The Podman command remains installed without the opt-in, but the wrapper omits
 the socket mount and removes `CONTAINER_HOST` from the session environment.
 Both Codex and shell modes use a read-only image root with writable workspace,

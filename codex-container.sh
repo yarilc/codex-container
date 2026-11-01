@@ -14,6 +14,8 @@ Runs Codex with a read-only image filesystem. The current directory (or its
 parent with --container-git-worktree) and CODEX_HOME are mounted read/write.
 /tmp, /var/tmp, /run, and HOME outside CODEX_HOME are writable and ephemeral.
 Podman is installed; host socket access requires CODEX_CONTAINER_PODMAN=1.
+Enabled access verifies that the socket serves a reachable rootless engine;
+rootful or unverifiable services stop startup before image operations.
 
 Container options:
   --container-build      build or refresh the container image before starting
@@ -87,6 +89,12 @@ if [[ "${CODEX_CONTAINER_PODMAN:-}" == 1 ]]; then
     runtime_dir="/run/user/$(id -u)"
     socket="${runtime_dir}/podman/podman.sock"
     [[ -S "$socket" ]] || die "Podman socket not found: $socket (start 'podman system service --time=0' or enable podman.socket)"
+    socket_rootless=$(podman --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}}') || die "Cannot query Podman socket: $socket (check the service and socket permissions)"
+    case "$socket_rootless" in
+        true) ;;
+        false) die "Podman socket must serve a rootless engine: $socket (start the service as your non-root user)" ;;
+        *) die "Cannot verify rootless operation at Podman socket: $socket (check that the service reports Host.Security.Rootless as true)" ;;
+    esac
 fi
 
 if ((build_image)) || ! podman image exists "$IMAGE"; then
