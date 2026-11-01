@@ -85,3 +85,85 @@ this disposition does not convert unavailable runtime checks into passes.
 The main specifications were synchronized with both deltas and validated.
 The remaining real-engine verification can be resumed in a subsequent change
 when a same-host rootless service is available.
+
+## Session lifecycle hardening: 2026-11-01
+
+The `harden-container-session-lifecycle` verification used UID/GID 1000:1000,
+a Podman 4.3.1 client, and a reachable Linux amd64 rootless Podman 4.9.3
+service through an explicit same-host Unix `CONTAINER_HOST`. The service
+reported rootless `true` and service-remote `true`. Unlike the earlier session
+above, this session had the service socket exposed. Runtime state and projects
+used a disposable native Linux Podman volume through `tests/run-runtime.sh`.
+No actual Codex credentials were used or read.
+
+The initial directly enabled runtime command used the checkout's default
+`.test-state` and failed all ten tests in setup because that filesystem
+reported mode 0777 instead of the requested 0700. No session behavior was
+verified by that attempt. The documented native-volume runner resolved this
+storage limitation without weakening state privacy checks.
+
+The first native-volume run passed nine tests and exposed an additional
+Podman stop grace period during forced cleanup of a TERM-ignoring application.
+The wrapper now uses `rm --force --ignore --time 0` after its own grace period,
+avoiding Podman's default ten-second stop wait. The focused real-engine signal
+test then passed, including cleanup isolation and absence of residual session
+containers.
+
+Production image construction with the new `.containerignore` succeeded using
+cached layers and a disposable validation tag, which was removed afterwards.
+The resulting image ID was
+`2a57f466c2effa654dcaafc516851072f4c8b36dadd2b07e90f095330b69c75f`.
+This verifies the unchanged Containerfile still builds with the reduced context;
+it does not claim a fresh package installation. The separate context regression
+uses a no-cache disposable build with dummy root and nested sensitive files,
+an unknown file, and a nested Containerfile, proving those inputs are excluded.
+
+The synthetic wrapper suite covers checked all-container naming, decimal bounds
+and leading zeroes, collision recovery and exhaustion, creation/inspection/build
+errors, full-ID cleanup and diagnostics, pending creation signals, TERM/INT/HUP
+in both entrypoint modes, ignored signals, failed/stalled control calls, bounded
+client termination, application exit 125, all four stdin/stdout terminal
+combinations, pipe/file input and EOF, exact tmpfs options, and the preexisting
+engine, state, delegation, and workspace contracts.
+
+The real-engine suite additionally checks competing wrapper starts with a
+stopped `-08` container, distinct reserved names, actual TERM/INT/HUP delivery,
+forced cleanup for a TERM-ignoring application, unrelated-container survival,
+application exit 125, PTY and redirected input, tmpfs capacity and permission
+inspection, executable temporary files, `/run` exhaustion, persistent state,
+ephemeral reset, root filesystem protection, mapped ownership, real worktrees,
+child binds, and a containerized caller with a remapped Unix socket.
+
+Local engine execution without `CONTAINER_HOST` remains unavailable in this
+container: `podman info` fails because `newuidmap` is not installed. The real
+results cover explicit Unix service execution, not the local engine path.
+Linux arm64, SELinux enforcing behavior, and Codex's internal command sandbox
+remain unverified. SIGKILL, host failure, and service loss cannot guarantee
+owned cleanup. Earlier archived task states are historical and are not changed
+by this run.
+
+Final checks after the forced-removal correction:
+
+- `python3 -B -m unittest discover -s tests -p test_wrapper.py -v`:
+  **33 tests passed** in 62.802 seconds, using synthetic Podman responses.
+- `bash tests/run-runtime.sh`: **10 real-engine tests passed** in 36.547
+  seconds with disposable native Linux volume storage. The runner removed its
+  volume, temporary context-test image, and fixture containers; no residual
+  session-test containers or validation image tags were found afterwards.
+- `bash -n codex-container.sh tests/run-runtime.sh`: passed.
+- `git diff --check` and whitespace checks on new planning and ignore files:
+  passed.
+- `openspec validate harden-container-session-lifecycle --strict`: passed.
+- `openspec validate --specs --strict`: all three existing main specs passed;
+  delta synchronization is a later workflow action.
+
+### Archive disposition
+
+On 2026-11-01, the completed `harden-container-session-lifecycle` change was
+synchronized and archived at
+`openspec/changes/archive/2026-11-01-harden-container-session-lifecycle/`
+with all 19 tasks complete. Synchronization created `container-image` with
+four requirements and `container-session` with seven requirements, and added
+two requirements to `runtime-filesystem`, preserving its existing requirements.
+All five resulting main specs passed strict validation, and every added
+requirement and scenario was compared with its delta before archival.

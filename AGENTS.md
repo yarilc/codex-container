@@ -56,6 +56,26 @@ State checks do not audit ancestors, ACLs, or every existing file.
 Use `--container-git-worktree` from a worktree root to expose its immediate
 physical parent while preserving the starting directory.
 
+Sessions reserve directory/index names atomically with create, using both
+running and stopped names. Parse one to nine decimal digits in base ten,
+propagate listing errors, and retry only confirmed collisions, at most 20 times.
+Track the created full ID and use it exclusively for signals and cleanup;
+never replace an existing container or clean up by a reusable name. Preserve
+application exit statuses including 125. Forward TERM/INT/HUP and return
+143/130/129 for wrapper interruptions. Reconcile pending creation before
+cleanup; bound graceful shutdown to five seconds, engine control calls to
+five seconds plus a one-second kill allowance, and final client reaping to
+five seconds. Report cleanup failures without overriding the primary status.
+SIGKILL and engine loss can leave residual containers.
+Allocate a TTY only when stdin and stdout are terminals, retaining redirected
+stdin and EOF. `/tmp` is capped at 512 MiB and `/run` at 32 MiB, preserving
+permissions and executable temporary locations. These are per-mount maxima,
+not reserved memory or a container memory limit; `/var/tmp` and home gain no
+explicit capacity. Build automatically only for image-existence status 1;
+other inspection errors stop startup. The default-deny `.containerignore`
+permits only the root Containerfile as an application input; future local
+COPY/ADD sources need deliberate inclusion.
+
 ## Coding Style & Naming Conventions
 
 Use Bash with `set -Eeuo pipefail`, quoted variables, and command arrays for
@@ -78,7 +98,8 @@ Standard-library Python tests live in `tests/`. Run wrapper checks with
 checks require opt-in via `CODEX_RUNTIME_TESTS=1`, a built image, a same-host
 rootless service, and private host-visible `CODEX_TEST_ROOT`, or use
 `bash tests/run-runtime.sh` for disposable native Linux volume storage. Use a
-pseudo-terminal for the wrapper's existing TTY behavior. Record results and
+pseudo-terminal for interactive checks and pipes/files for nonterminal checks.
+Cover concurrent reservation, signals, owned cleanup, and exit 125. Record results and
 limitations in `docs/validation.md`; do not treat skipped or synthetic tests
 as real engine verification, and do not use actual Codex credentials in tests.
 

@@ -13,6 +13,8 @@ Usage: codex-container.sh [container option] [codex arguments...]
 Runs Codex with a read-only image filesystem. The current directory (or its
 parent with --container-git-worktree) and CODEX_HOME are mounted read/write.
 /tmp, /var/tmp, /run, and HOME outside CODEX_HOME are writable and ephemeral.
+/tmp is limited to 512 MiB and /run to 32 MiB; these are per-mount maxima.
+TTY allocation requires terminal stdin and stdout; redirected stdin is retained.
 CODEX_HOME must be caller-owned, accessible, and private (no group/other
 permissions). Missing state is created with mode 0700; existing state is not
 repaired automatically. Use private Linux storage if Unix modes are ignored.
@@ -32,6 +34,10 @@ Container options:
   --container-help       show this wrapper help
 
 All other arguments are passed to Codex unchanged.
+TERM/INT/HUP are forwarded to the owned session; interruption exits are
+143/130/129. Graceful shutdown allows five seconds before forced cleanup.
+Only this invocation's container is removed. SIGKILL or engine loss can leave
+residual containers requiring explicit cleanup.
 
 Environment:
   CODEX_CONTAINER_IMAGE  image name (default: localhost/codex-cli:latest)
@@ -55,19 +61,6 @@ die() { printf 'codex-container: %s\n' "$*" >&2; exit 1; }
 container_prefix="${WORKSPACE##*/}"
 container_prefix="$(printf '%s' "$container_prefix" | sed -E 's/[^[:alnum:]_.-]+/-/g; s/^[.-]+//; s/[.-]+$//')"
 [[ -n "$container_prefix" ]] || container_prefix="codex-container"
-
-container_name() {
-    local highest=-1 name suffix
-    while IFS= read -r name; do
-        [[ "$name" == "$container_prefix"-* ]] || continue
-        suffix="${name#"$container_prefix"-}"
-        [[ "$suffix" =~ ^[0-9]+$ ]] || continue
-        if (( suffix > highest )); then
-            highest="$suffix"
-        fi
-    done < <(podman ps --format '{{.Names}}')
-    printf '%s-%d\n' "$container_prefix" "$((highest + 1))"
-}
 
 build_image=0
 shell_mode=0
@@ -150,18 +143,26 @@ state_mode=$(stat -c '%a' -- "$CODEX_DIR") || die "Cannot inspect Codex state pe
 [[ "$state_mode" =~ ^[0-7]{3,4}$ ]] || die "Cannot verify Codex state permissions: $CODEX_DIR"
 (( (8#$state_mode & 077) == 0 )) || die "Codex state must be private: $CODEX_DIR (chmod 700 your directory, or choose CODEX_HOME on a Linux filesystem that enforces Unix permissions)"
 
-if ((build_image)) || ! podman image exists "$IMAGE"; then
+if ((build_image)); then
+    podman build --tag "$IMAGE" --file "$SCRIPT_DIR/Containerfile" "$SCRIPT_DIR"
+elif podman image exists "$IMAGE"; then
+    :
+else
+    image_status=$?
+    if ((image_status != 1)); then
+        printf 'codex-container: Cannot inspect image %s (status %s); check Podman storage and connection\n' "$IMAGE" "$image_status" >&2
+        exit "$image_status"
+    fi
     podman build --tag "$IMAGE" --file "$SCRIPT_DIR/Containerfile" "$SCRIPT_DIR"
 fi
 
 podman_args=(
-    --rm --interactive --tty
+    --rm --interactive
     --read-only --read-only-tmpfs=false
-    --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777
+    --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777,size=512m
     --tmpfs /var/tmp:rw,exec,nosuid,nodev,mode=1777
-    --tmpfs /run:rw,nosuid,nodev,mode=1777
+    --tmpfs /run:rw,nosuid,nodev,mode=1777,size=32m
     --tmpfs /codex-home:rw,exec,nosuid,nodev,mode=1777
-    --name "$(container_name)"
     --userns=keep-id
     --user "$(id -u):$(id -g)"
     --workdir "$WORKSPACE"
@@ -170,6 +171,9 @@ podman_args=(
     --volume "$workspace_mount:$workspace_mount:rw"
     --volume "$CODEX_DIR:/codex-home/.codex:rw"
 )
+if [[ -t 0 && -t 1 ]]; then
+    podman_args+=(--tty)
+fi
 
 if [[ "${CODEX_CONTAINER_PODMAN:-}" == 1 ]]; then
     podman_args+=(
@@ -182,7 +186,137 @@ fi
 
 if ((shell_mode)); then
     podman_args+=(--entrypoint /bin/bash)
-    podman run "${podman_args[@]}" "$IMAGE"
-else
-    podman run "${podman_args[@]}" "$IMAGE" "${codex_args[@]}"
+    codex_args=()
 fi
+
+command -v timeout >/dev/null || die "coreutils timeout is required for bounded session cleanup"
+container_id=''
+client_pid=''
+session_tmp=''
+pending_signal=''
+pending_status=0
+signal_epoch=0
+attached=0
+
+record_signal() {
+    signal_epoch=$((signal_epoch + 1))
+    if ((pending_status == 0)); then
+        pending_signal=$1
+        pending_status=$2
+    fi
+    if ((attached)) && [[ -n "$client_pid" ]]; then
+        exit "$pending_status"
+    fi
+}
+
+# A trapped signal interrupts wait without necessarily reaping the child.
+wait_for_create() {
+    local epoch status
+    while :; do
+        epoch=$signal_epoch
+        status=0
+        wait "$client_pid" || status=$?
+        ((epoch == signal_epoch)) || continue
+        return "$status"
+    done
+}
+
+wait_for_client_until() {
+    local deadline=$1
+    while kill -0 "$client_pid" 2>/dev/null; do
+        ((SECONDS < deadline)) || return 1
+        sleep 0.05
+    done
+}
+
+cleanup() {
+    local status=$? control_status
+    trap '' TERM INT HUP
+    if [[ -n "$container_id" ]]; then
+        if ((pending_status && attached)); then
+            if timeout --kill-after=1s 5s podman kill --signal "$pending_signal" "$container_id" >/dev/null; then
+                wait_for_client_until "$((SECONDS + 5))" || true
+            else
+                printf 'codex-container: Cannot forward %s to owned container %s\n' "$pending_signal" "$container_id" >&2
+            fi
+        fi
+        control_status=0
+        timeout --kill-after=1s 5s podman rm --force --ignore --time 0 "$container_id" >/dev/null || control_status=$?
+        if ((control_status)); then
+            printf 'codex-container: Cannot remove owned container %s (status %s); check the engine and remove it explicitly\n' "$container_id" "$control_status" >&2
+        fi
+    fi
+    if [[ -n "$client_pid" ]]; then
+        kill -TERM "$client_pid" 2>/dev/null || true
+        if ! wait_for_client_until "$((SECONDS + 5))"; then
+            kill -KILL "$client_pid" 2>/dev/null || true
+        fi
+        wait "$client_pid" 2>/dev/null || true
+    fi
+    [[ -z "$session_tmp" ]] || rm -rf -- "$session_tmp"
+    return "$status"
+}
+
+trap cleanup EXIT
+trap 'record_signal TERM 143' TERM
+trap 'record_signal INT 130' INT
+trap 'record_signal HUP 129' HUP
+session_tmp=$(umask 077; mktemp -d) || die "Cannot create private session bookkeeping directory"
+((pending_status == 0)) || exit "$pending_status"
+names=$(podman ps --all --format '{{.Names}}') || die "Cannot list Podman containers; check the launch engine"
+((pending_status == 0)) || exit "$pending_status"
+next_index=0
+while IFS= read -r name; do
+    [[ "$name" == "$container_prefix"-* ]] || continue
+    suffix=${name#"$container_prefix"-}
+    [[ "$suffix" =~ ^[0-9]{1,9}$ ]] || continue
+    numeric=$((10#$suffix))
+    ((numeric < next_index)) || next_index=$((numeric + 1))
+done <<< "$names"
+
+for ((attempt=0; attempt<20; attempt++)); do
+    ((pending_status == 0)) || exit "$pending_status"
+    name="$container_prefix-$next_index"
+    rm -f -- "$session_tmp/cid"
+    podman create --name "$name" --cidfile "$session_tmp/cid" "${podman_args[@]}" "$IMAGE" "${codex_args[@]}" \
+        </dev/null >"$session_tmp/output" 2>"$session_tmp/error" &
+    client_pid=$!
+    create_status=0
+    wait_for_create || create_status=$?
+    client_pid=''
+    # The private CID file remains authoritative if a signal interrupted wait.
+    if [[ -s "$session_tmp/cid" ]]; then
+        IFS= read -r container_id < "$session_tmp/cid" || true
+        [[ "$container_id" =~ ^[a-f0-9]{64}$ ]] || { container_id=''; die "Invalid container ID returned by creation"; }
+    fi
+    ((pending_status == 0)) || exit "$pending_status"
+    if ((create_status == 0)); then
+        [[ -n "$container_id" ]] || die "Creation succeeded without a container ID"
+        break
+    fi
+    cat -- "$session_tmp/error" >&2
+    [[ -z "$container_id" ]] || exit "$create_status"
+    exists_status=0
+    podman container exists "$name" || exists_status=$?
+    ((pending_status == 0)) || exit "$pending_status"
+    case "$exists_status" in
+        0) next_index=$((next_index + 1)) ;;
+        1) exit "$create_status" ;;
+        *) die "Cannot verify container name collision for $name (status $exists_status)" ;;
+    esac
+done
+[[ -n "$container_id" ]] || die "Cannot reserve a container name after 20 attempts"
+((pending_status == 0)) || exit "$pending_status"
+
+# Explicit redirection retains redirected stdin for the background client.
+attached=1
+podman start --attach --interactive --sig-proxy=false "$container_id" <&0 &
+client_pid=$!
+if ((pending_status)); then
+    exit "$pending_status"
+fi
+status=0
+wait "$client_pid" || status=$?
+((pending_status == 0)) || exit "$pending_status"
+client_pid=''
+exit "$status"

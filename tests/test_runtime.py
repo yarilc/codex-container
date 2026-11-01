@@ -7,6 +7,7 @@ import pty
 import select
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import termios
@@ -20,7 +21,7 @@ ENABLED = os.environ.get('CODEX_RUNTIME_TESTS') == '1'
 
 
 def terminal_shell(command, script, env, cwd, timeout=90):
-    """Wait for Bash, then feed one command through the wrapper's required TTY."""
+    """Wait for interactive Bash, then feed one command through a PTY."""
     master, slave = pty.openpty()
     settings = termios.tcgetattr(slave)
     settings[3] &= ~termios.ECHO
@@ -110,7 +111,178 @@ class RuntimeTests(unittest.TestCase):
                               script, self.env | env, self.project)
 
     def assert_success(self, result):
-        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def engine(self, *args, **kwargs):
+        return subprocess.run(['podman', *args], capture_output=True, text=True,
+                              timeout=kwargs.pop('timeout', 30), **kwargs)
+
+    def pipe_shell(self, script, timeout=60):
+        return subprocess.run(['bash', str(WRAPPER), '--container-shell'],
+                              input=script, capture_output=True, text=True,
+                              env=self.env, cwd=self.project, timeout=timeout)
+
+    def start_shell(self, script):
+        process = subprocess.Popen(['bash', str(WRAPPER), '--container-shell'],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True, env=self.env,
+                                   cwd=self.project, start_new_session=True)
+        def stop():
+            if process.poll() is None:
+                process.send_signal(signal.SIGTERM)
+                try:
+                    process.wait(timeout=25)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+            process.communicate(timeout=5)
+        self.addCleanup(stop)
+        process.stdin.write(script)
+        process.stdin.close()
+        process.stdin = None
+        return process
+
+    def wait_file(self, path, process):
+        deadline = time.monotonic() + 30
+        while not path.exists():
+            if process.poll() is not None:
+                out, err = process.communicate()
+                self.fail('Runtime wrapper exited before readiness:\n' + out + err)
+            self.assertLess(time.monotonic(), deadline, 'runtime readiness timed out')
+            time.sleep(0.05)
+
+    def session_names(self):
+        listing = self.engine('ps', '--all', '--format', '{{.Names}}')
+        self.assertEqual(listing.returncode, 0, listing.stderr)
+        return [name for name in listing.stdout.splitlines()
+                if name.startswith(self.project.name + '-')]
+
+    def unique_project(self):
+        self.project = self.base / ('project-' + self.base.name)
+        self.project.mkdir()
+
+    def test_nonterminal_input_exit_status_and_pty(self):
+        self.unique_project()
+        result = self.pipe_shell('test ! -t 0\nprintf "pipe payload\\n"\nexit 125\n')
+        self.assertEqual(result.returncode, 125, result.stdout + result.stderr)
+        self.assertIn('pipe payload\n', result.stdout)
+        self.assertEqual(self.session_names(), [])
+        source = self.base / 'commands.sh'
+        source.write_text('test ! -t 0\nprintf "file payload\\n"\n')
+        with source.open() as stream:
+            result = subprocess.run(['bash', str(WRAPPER), '--container-shell'],
+                                    stdin=stream, capture_output=True, text=True,
+                                    env=self.env, cwd=self.project, timeout=60)
+        self.assert_success(result)
+        self.assertIn('file payload\n', result.stdout)
+        self.assert_success(self.shell('test -t 0\ntest -t 1'))
+
+    def test_concurrent_reservation_with_stopped_container(self):
+        self.unique_project()
+        stopped = self.engine('create', '--name', self.project.name + '-08',
+                              '--entrypoint', '/bin/true', IMAGE)
+        self.assertEqual(stopped.returncode, 0, stopped.stderr)
+        stopped_id = stopped.stdout.strip()
+        self.addCleanup(self.engine, 'rm', '--force', '--ignore', stopped_id)
+        processes = []
+        for index in range(2):
+            process = self.start_shell(f'touch ready-{index}\nwhile test ! -e release; do sleep 0.05; done\n')
+            processes.append(process)
+        for index, process in enumerate(processes):
+            self.wait_file(self.project / f'ready-{index}', process)
+        self.assertEqual(set(self.session_names()),
+                         {self.project.name + suffix for suffix in ('-08', '-9', '-10')})
+        (self.project / 'release').touch()
+        for process in processes:
+            out, err = process.communicate(timeout=30)
+            self.assertEqual(process.returncode, 0, out + err)
+        self.assertEqual(self.session_names(), [self.project.name + '-08'])
+
+    def test_signal_delivery_owned_cleanup_and_stubborn_process(self):
+        self.unique_project()
+        unrelated = self.engine('create', '--name', self.project.name + '-08',
+                                '--entrypoint', '/bin/true', IMAGE)
+        self.assertEqual(unrelated.returncode, 0, unrelated.stderr)
+        self.addCleanup(self.engine, 'rm', '--force', '--ignore', unrelated.stdout.strip())
+        for sig, status in ((signal.SIGTERM, 143), (signal.SIGINT, 130), (signal.SIGHUP, 129)):
+            with self.subTest(signal=sig):
+                (self.project / 'ready').unlink(missing_ok=True)
+                signame = signal.Signals(sig).name[3:]
+                process = self.start_shell(f"trap 'printf {signame} > received; exit 0' {signame}\n"
+                                           'touch ready\nwhile :; do sleep 0.1; done\n')
+                self.wait_file(self.project / 'ready', process)
+                process.send_signal(sig)
+                out, err = process.communicate(timeout=25)
+                self.assertEqual(process.returncode, status, out + err)
+                self.assertEqual((self.project / 'received').read_text(), signame)
+                self.assertEqual(self.session_names(), [self.project.name + '-08'])
+        (self.project / 'ready').unlink()
+        process = self.start_shell("trap '' TERM\ntouch ready\nwhile :; do sleep 0.1; done\n")
+        self.wait_file(self.project / 'ready', process)
+        start = time.monotonic()
+        process.send_signal(signal.SIGTERM)
+        out, err = process.communicate(timeout=25)
+        self.assertEqual(process.returncode, 143, out + err)
+        self.assertLess(time.monotonic() - start, 24)
+        self.assertEqual(self.session_names(), [self.project.name + '-08'])
+
+    def test_tmpfs_capacities_execution_and_exhaustion(self):
+        script = '''python3 - <<'PYTHON'
+import errno, os, stat
+for path, expected in [('/tmp', 512 * 1024 * 1024), ('/run', 32 * 1024 * 1024)]:
+    info = os.statvfs(path)
+    assert info.f_blocks * info.f_frsize == expected, (path, info)
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o1777
+    assert info.f_flag & os.ST_NOSUID
+    assert info.f_flag & os.ST_NODEV
+for path in ('/tmp', '/var/tmp', '/codex-home'):
+    assert not os.statvfs(path).f_flag & os.ST_NOEXEC
+try:
+    with open('/run/exhaust', 'wb', buffering=0) as target:
+        block = b'x' * (1024 * 1024)
+        for _ in range(34): target.write(block)
+except OSError as error:
+    assert error.errno == errno.ENOSPC, error
+else:
+    raise AssertionError('/run exceeded its capacity')
+finally:
+    os.unlink('/run/exhaust')
+PYTHON
+for directory in /tmp /var/tmp /codex-home; do
+    printf '#!/bin/sh\\nexit 0\\n' > "$directory/executable"
+    chmod +x "$directory/executable"
+    "$directory/executable" || exit 1
+done
+printf persistent > "$CODEX_HOME/capacity-sentinel"
+printf workspace > capacity-sentinel
+'''
+        result = self.pipe_shell('set -e\n' + script)
+        self.assert_success(result)
+        self.assertEqual((self.state / 'capacity-sentinel').read_text(), 'persistent')
+        self.assertEqual((self.project / 'capacity-sentinel').read_text(), 'workspace')
+        self.assert_success(self.pipe_shell('test ! -e /run/exhaust\ntest ! -e /tmp/executable\n'))
+
+    def test_build_context_excludes_sensitive_and_unknown_inputs(self):
+        context = self.base / 'build-context'
+        context.mkdir()
+        shutil.copyfile(ROOT / '.containerignore', context / '.containerignore')
+        for relative in ('.git/config', '.codex/auth.json', '.env', 'nested/credentials',
+                         'nested/cache/sentinel', '.test-state/sentinel', 'docs/sentinel',
+                         'tests/sentinel', 'unknown-file', 'nested/Containerfile'):
+            path = context / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('DUMMY-NOT-A-CREDENTIAL')
+        (context / 'Containerfile').write_text(
+            'FROM ' + IMAGE + '\nCOPY . /context\n'
+            'RUN test -f /context/Containerfile && '
+            'test "$(find /context -mindepth 1 ! -name Containerfile | wc -l)" = 0\n')
+        iidfile = self.base / 'test-image-id'
+        def remove_image():
+            if iidfile.exists():
+                self.engine('rmi', '--force', iidfile.read_text().strip())
+        self.addCleanup(remove_image)
+        result = self.engine('build', '--no-cache', '--iidfile', str(iidfile),
+                             '--file', str(context / 'Containerfile'), str(context), timeout=180)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_image_and_mount_boundaries(self):
         sentinel = self.base / 'outside-sentinel'

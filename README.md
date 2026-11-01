@@ -172,6 +172,20 @@ chmod +x codex-container.sh
 CODEX_YOLO=1 ./codex-container.sh
 ```
 
+Without `--container-build`, image inspection status 0 uses the existing image
+and status 1 builds a missing image. Other inspection errors stop startup;
+check the reported storage or engine error instead of expecting a rebuild.
+`--container-build` explicitly builds the selected image without an existence
+check. A failed build never starts a session.
+
+The default-deny `.containerignore` includes only the root `Containerfile` as
+an application build input. Git metadata, local configuration, state,
+credentials, caches, tests, documentation, and other files are excluded,
+including nested and newly added files. The builder can still read its ignore
+metadata. Future local `COPY` or `ADD` inputs must be deliberately included in
+`.containerignore`. This policy filters builds; it does not restrict runtime
+workspace mounts.
+
 To allow access to the host Podman service, complete the optional socket setup
 and verification, then use:
 
@@ -211,9 +225,40 @@ The wrapper handles `--container-build`, `--container-shell`,
 forwarded unchanged, so `codex --help`, `codex resume --last`, and other normal
 Codex invocations keep their original meaning.
 
-Each container is named from the last component of the current directory and
-the next highest numeric index among running instances, for example
-`codex-container-0`, `codex-container-1`.
+Each container is named from the last component of the physical current directory
+and the next highest supported numeric index among running and stopped
+containers, for example `codex-container-0`, `codex-container-1`. Suffixes of
+one to nine decimal digits count (`08` means eight); malformed or longer
+suffixes are ignored. Enumeration errors stop startup. Creation reserves the
+name atomically, with at most 20 attempts for confirmed collisions. Other
+creation or collision-check errors stop startup without replacing any container.
+
+The wrapper tracks the full ID of the container it created and attempts cleanup
+on exit, failed startup, or handled interruption. It never removes another
+container to obtain a name. Application exit codes, including 125, pass through
+without retrying execution, and cleanup failures do not replace that status.
+TERM, INT, and HUP sent to the wrapper are forwarded to its running container;
+wrapper interruption exits are 143, 130, and 129 respectively. A signal during
+creation is recorded until the creation result can be reconciled, then the
+owned container is removed without starting its application.
+
+After forwarding a signal, graceful shutdown allows up to five seconds before
+forced removal. Engine control commands have five-second deadlines (plus a
+one-second forced termination allowance); final client reaping is also bounded
+at five seconds. These are separate phases, not a five-second total deadline.
+SIGKILL, host failure, or engine loss can leave residual containers; failed
+cleanup reports the owned ID for explicit removal. Creation reconciliation
+requires a responsive engine. Normal engine auto-removal remains enabled.
+
+Both Codex and shell modes allocate a TTY only when stdin and stdout are
+terminals. Pipes, file input, and redirected output retain stdin forwarding and
+EOF without requesting a TTY. Commands that themselves require a terminal still
+need one. For example, run shell commands from a file:
+
+```bash
+printf 'pwd\nexit 0\n' | ./codex-container.sh --container-shell
+./codex-container.sh --container-shell < commands.sh > session.log
+```
 
 `CODEX_YOLO=1` starts Codex with `--yolo`, disabling approvals and sandboxing.
 Use it only when the container and its mounts are considered an isolated,
@@ -306,6 +351,13 @@ files there are discarded when the container is removed, except for the
 nested persistent mount at `/codex-home/.codex`. Temporary build artifacts
 can execute in `/tmp`, `/var/tmp`, and `/codex-home`.
 
+`/tmp` has a 512 MiB maximum and `/run` a 32 MiB maximum. Both retain mode
+1777, `nosuid`, and `nodev`; `/tmp` retains executable storage and `/run` keeps
+its existing execution policy. These are per-mount capacities, not reserved
+memory or a total container memory limit. This policy adds no explicit capacity
+to `/var/tmp` or ephemeral home. Writes can fail when a bounded mount fills;
+workspace and persistent state remain separate host storage.
+
 By default, the current workspace is mounted at the same absolute path inside
 the container. With `--container-git-worktree`, its immediate physical parent
 is mounted at that same absolute path instead; the working directory and
@@ -373,12 +425,13 @@ The runtime suite requires a reachable delegation socket and supports the same
 tests fail if prerequisites are missing; without opt-in they are skipped.
 Projects and state are disposable, and the suite starts only shell sessions
 and `codex --version`, without loading real credentials or submitting requests.
-It allocates a pseudo-terminal because the wrapper still requires one. Use
+It tests both pseudo-terminal attachment and redirected stdin. Use
 the volume runner if the workspace filesystem cannot enforce state privacy,
 or if the host has no Python. The checkout, test root, and build context must
 retain their host absolute paths when using a containerized caller.
 
 Checks cover real mount boundaries, identity, persistent state, all ephemeral
-locations, linked Git worktrees, child binds, and a caller with a remapped
-Unix service socket. Exact results and unavailable checks are recorded in
+locations, tmpfs capacities and execution, concurrent naming, signals and owned
+cleanup, exit 125, build-context exclusion, linked Git worktrees, child binds,
+and a caller with a remapped Unix service socket. Exact results and unavailable checks are recorded in
 [docs/validation.md](docs/validation.md).

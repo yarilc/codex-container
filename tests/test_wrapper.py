@@ -3,15 +3,18 @@ import itertools
 import json
 import os
 from pathlib import Path
+import pty
+import signal
 import socket
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / 'codex-container.sh'
 FAKE = r'''#!/usr/bin/env python3
-import json, os, pathlib, sys
+import json, os, pathlib, signal, sys, time
 args = sys.argv[1:]
 with open(os.environ['FAKE_LOG'], 'a') as log:
     log.write(json.dumps(args) + '\n')
@@ -21,8 +24,49 @@ if args[0] == 'info':
 elif args[:2] == ['--remote', '--url']:
     print(os.environ.get('FAKE_SOCKET_INFO', 'true\n/host/podman.sock'))
     sys.exit(int(os.environ.get('FAKE_SOCKET_STATUS', '0')))
-elif args[0] == 'run':
+elif args[0] == 'ps':
+    print(os.environ.get('FAKE_NAMES', ''))
+    sys.exit(int(os.environ.get('FAKE_LIST_STATUS', '0')))
+elif args[0] == 'image':
+    sys.exit(int(os.environ.get('FAKE_IMAGE_STATUS', '0')))
+elif args[0] == 'build':
+    sys.exit(int(os.environ.get('FAKE_BUILD_STATUS', '0')))
+elif args[:2] == ['container', 'exists']:
+    sys.exit(int(os.environ.get('FAKE_EXISTS_STATUS', '0')))
+elif args[0] == 'create':
+    calls = [json.loads(line) for line in pathlib.Path(os.environ['FAKE_LOG']).read_text().splitlines()]
+    attempt = sum(c[0] == 'create' for c in calls)
+    if attempt <= int(os.environ.get('FAKE_COLLISIONS', '0')):
+        print('synthetic collision', file=sys.stderr)
+        sys.exit(125)
+    status = int(os.environ.get('FAKE_CREATE_STATUS', '0'))
+    if status:
+        print('synthetic create failure', file=sys.stderr)
+        sys.exit(status)
+    cid = 'a' * 64
+    pathlib.Path(args[args.index('--cidfile') + 1]).write_text(cid + '\n')
+    if os.environ.get('FAKE_CREATE_BARRIER'):
+        barrier = pathlib.Path(os.environ['FAKE_CREATE_BARRIER'])
+        barrier.with_suffix('.ready').touch()
+        while not barrier.with_suffix('.release').exists(): time.sleep(0.01)
+    print(cid)
+elif args[0] in ('kill', 'rm'):
+    if os.environ.get('FAKE_CONTROL_STALL') == args[0]: time.sleep(30)
+    status = int(os.environ.get('FAKE_' + args[0].upper() + '_STATUS', '0'))
+    if not status and os.environ.get('FAKE_SESSION'):
+        if args[0] == 'rm' or not os.environ.get('FAKE_IGNORE_SIGNAL'):
+            pathlib.Path(os.environ['FAKE_SESSION'] + '.done').touch()
+    sys.exit(status)
+elif args[0] in ('run', 'start'):
+    if os.environ.get('FAKE_CLIENT_IGNORE_TERM'):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
     print('mask:' + oct(os.umask(0)))
+    if os.environ.get('FAKE_ECHO_INPUT'):
+        sys.stdout.write(sys.stdin.read())
+    if os.environ.get('FAKE_SESSION'):
+        session = pathlib.Path(os.environ['FAKE_SESSION'])
+        session.with_suffix('.ready').touch()
+        while not session.with_suffix('.done').exists(): time.sleep(0.01)
     sys.exit(int(os.environ.get('FAKE_EXIT', '0')))
 '''
 
@@ -62,7 +106,7 @@ class WrapperTests(unittest.TestCase):
     def assert_rejected(self, result):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn('codex-container:', result.stderr)
-        self.assertFalse(any(call[0] in ('image', 'build', 'ps', 'run') for call in self.calls()))
+        self.assertFalse(any(call[0] in ('image', 'build', 'ps', 'run', 'create', 'start') for call in self.calls()))
 
     def test_help_without_engine_or_state(self):
         result = self.run_wrapper('--container-help', CODEX_YOLO='invalid', CONTAINER_CONNECTION='bad')
@@ -87,7 +131,7 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls()[0][0], 'info')
         self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
-        self.assertEqual(self.calls()[-1][-3:], ['exec', 'prompt with spaces', ''])
+        self.assertEqual(self.run_args()[-3:], ['exec', 'prompt with spaces', ''])
 
     def test_explicit_build_and_image_override(self):
         result = self.run_wrapper('--container-build', '--version', CODEX_CONTAINER_IMAGE='test/custom:tag')
@@ -126,11 +170,216 @@ class WrapperTests(unittest.TestCase):
         result = self.run_wrapper(CONTAINER_HOST='unix:///visible/launch.sock', FAKE_INFO='true linux true')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
-        self.assertIn('--unsetenv', self.calls()[-1])
+        self.assertIn('--unsetenv', self.run_args())
 
 
     def run_args(self):
-        return next(call for call in self.calls() if call[0] == 'run')
+        return next(call for call in self.calls() if call[0] == 'create')
+
+    def creates(self):
+        return [c for c in self.calls() if c[0] == 'create']
+
+    def wait_path(self, path, process, timeout=5):
+        deadline = time.monotonic() + timeout
+        while not path.exists():
+            self.assertIsNone(process.poll(), 'wrapper exited before fixture barrier')
+            self.assertLess(time.monotonic(), deadline, 'fixture barrier timed out')
+            time.sleep(0.01)
+
+    def start_wrapper(self, *args, **env):
+        process = subprocess.Popen(['bash', str(WRAPPER), *args], cwd=self.project,
+                                   env=self.env | env, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, start_new_session=True)
+        def stop():
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+            process.communicate(timeout=5)
+        self.addCleanup(stop)
+        return process
+
+    def assert_owned_cleanup(self):
+        removals = [c for c in self.calls() if c[0] == 'rm']
+        self.assertEqual(len(removals), 1)
+        self.assertEqual(removals[0][-1], 'a' * 64)
+        self.assertEqual(removals[0][removals[0].index('--time') + 1], '0')
+        cidfile = Path(self.run_args()[self.run_args().index('--cidfile') + 1])
+        self.assertFalse(cidfile.parent.exists())
+
+    def test_all_names_decimal_bounds_and_listing_error(self):
+        names = '\n'.join(['my-project-08', 'my-project-2', 'my-project-no',
+                           'my-project-9999999999', 'other-80', 'my-project--1'])
+        result = self.run_wrapper(FAKE_NAMES=names)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--all', next(c for c in self.calls() if c[0] == 'ps'))
+        self.assertIn('my-project-9', self.run_args())
+        result = self.run_wrapper(FAKE_LIST_STATUS='125')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Cannot list', result.stderr)
+        self.assertEqual(self.creates(), [])
+
+    def test_root_prefix_and_numeric_upper_bound(self):
+        result = subprocess.run(['bash', str(WRAPPER)], cwd='/', env=self.env,
+                                text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('codex-container-0', self.run_args())
+        result = self.run_wrapper(FAKE_NAMES='my-project-999999999')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('my-project-1000000000', self.run_args())
+
+    def test_collision_retries_and_exhaustion(self):
+        result = self.run_wrapper(FAKE_COLLISIONS='2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([c[c.index('--name') + 1] for c in self.creates()],
+                         ['my-project-0', 'my-project-1', 'my-project-2'])
+        self.assert_owned_cleanup()
+        result = self.run_wrapper(FAKE_COLLISIONS='20')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(self.creates()), 20)
+        self.assertIn('20 attempts', result.stderr)
+        self.assertFalse(any(c[0] in ('start', 'rm') for c in self.calls()))
+
+    def test_creation_and_collision_query_failures(self):
+        for exists in ('1', '125'):
+            with self.subTest(exists=exists):
+                result = self.run_wrapper(FAKE_CREATE_STATUS='42', FAKE_EXISTS_STATUS=exists)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(len(self.creates()), 1)
+                self.assertIn('synthetic create failure', result.stderr)
+                self.assertFalse(any(c[0] in ('start', 'rm') for c in self.calls()))
+                if exists == '1':
+                    self.assertEqual(result.returncode, 42)
+                else:
+                    self.assertIn('Cannot verify', result.stderr)
+
+    def test_application_status_and_cleanup_failure(self):
+        for status, removal in itertools.product((0, 23, 125), ('0', '125')):
+            with self.subTest(status=status, removal=removal):
+                result = self.run_wrapper(FAKE_EXIT=str(status), FAKE_RM_STATUS=removal)
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertEqual(len(self.creates()), 1)
+                self.assert_owned_cleanup()
+                self.assertEqual('Cannot remove owned' in result.stderr, removal != '0')
+
+    def test_signals_during_creation(self):
+        for sig, status in ((signal.SIGTERM, 143), (signal.SIGINT, 130), (signal.SIGHUP, 129)):
+            with self.subTest(sig=sig):
+                self.log.unlink(missing_ok=True)
+                barrier = self.base / f'create-{sig}'
+                process = self.start_wrapper(FAKE_CREATE_BARRIER=str(barrier))
+                self.wait_path(barrier.with_suffix('.ready'), process)
+                process.send_signal(sig)
+                # The client completes only after the parent has received the signal.
+                time.sleep(0.05)
+                barrier.with_suffix('.release').touch()
+                out, err = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, status, out + err)
+                self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+                self.assert_owned_cleanup()
+
+    def test_attached_signals_both_modes(self):
+        for shell, sig in itertools.product((False, True),
+                                           (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)):
+            expected = {signal.SIGTERM: 143, signal.SIGINT: 130, signal.SIGHUP: 129}[sig]
+            with self.subTest(shell=shell, sig=sig):
+                self.log.unlink(missing_ok=True)
+                session = self.base / f'session-{shell}-{sig}'
+                process = self.start_wrapper(*(['--container-shell'] if shell else []),
+                                             FAKE_SESSION=str(session))
+                self.wait_path(session.with_suffix('.ready'), process)
+                process.send_signal(sig)
+                out, err = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, expected, out + err)
+                kills = [c for c in self.calls() if c[0] == 'kill']
+                self.assertEqual(kills, [['kill', '--signal', signal.Signals(sig).name[3:], 'a' * 64]])
+                self.assert_owned_cleanup()
+                self.assertIn('--sig-proxy=false', next(c for c in self.calls() if c[0] == 'start'))
+
+    def test_stubborn_application_and_stalled_cleanup_are_bounded(self):
+        for stall in ('', 'kill', 'rm', 'failed-kill'):
+            with self.subTest(stall=stall):
+                self.log.unlink(missing_ok=True)
+                session = self.base / ('stubborn-' + (stall or 'application'))
+                process = self.start_wrapper(FAKE_SESSION=str(session), FAKE_IGNORE_SIGNAL='1',
+                                             FAKE_CONTROL_STALL=stall,
+                                             FAKE_KILL_STATUS='125' if stall == 'failed-kill' else '0',
+                                             FAKE_CLIENT_IGNORE_TERM='1' if stall == 'rm' else '')
+                self.wait_path(session.with_suffix('.ready'), process)
+                start = time.monotonic()
+                process.send_signal(signal.SIGTERM)
+                time.sleep(0.1)
+                process.send_signal(signal.SIGHUP)
+                out, err = process.communicate(timeout=23)
+                self.assertEqual(process.returncode, 143, out + err)
+                self.assertLess(time.monotonic() - start, 22)
+                self.assert_owned_cleanup()
+                if stall == 'rm':
+                    self.assertIn('Cannot remove owned', err)
+
+    def test_terminal_matrix(self):
+        for terminal_in, terminal_out in itertools.product((False, True), repeat=2):
+            with self.subTest(stdin=terminal_in, stdout=terminal_out):
+                self.log.unlink(missing_ok=True)
+                master, slave = pty.openpty()
+                try:
+                    process = subprocess.Popen(['bash', str(WRAPPER)], cwd=self.project,
+                                               env=self.env, stdin=slave if terminal_in else subprocess.DEVNULL,
+                                               stdout=slave if terminal_out else subprocess.PIPE,
+                                               stderr=subprocess.PIPE, text=True)
+                    out, err = process.communicate(timeout=10)
+                    self.assertEqual(process.returncode, 0, (out or '') + err)
+                    self.assertEqual('--tty' in self.run_args(), terminal_in and terminal_out)
+                finally:
+                    os.close(master)
+                    os.close(slave)
+
+    def test_pipe_and_file_input_reach_eof(self):
+        for shell in (False, True):
+            args = ['--container-shell'] if shell else ['exec', 'prompt with spaces', '']
+            result = subprocess.run(['bash', str(WRAPPER), *args], cwd=self.project,
+                                    env=self.env | {'FAKE_ECHO_INPUT': '1'}, input='payload\n',
+                                    text=True, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('payload\n', result.stdout)
+        source = self.base / 'input'
+        source.write_text('file payload\n')
+        with source.open() as stream:
+            result = subprocess.run(['bash', str(WRAPPER), '--container-shell'], cwd=self.project,
+                                    env=self.env | {'FAKE_ECHO_INPUT': '1'}, stdin=stream,
+                                    text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('file payload\n', result.stdout)
+
+    def test_image_and_build_status_matrix(self):
+        for shell, access, yolo, image in itertools.product((False, True), ('0', '1'), ('0', '1'), (0, 1, 125, 42)):
+            with self.subTest(shell=shell, access=access, yolo=yolo, image=image):
+                result = self.run_wrapper(*(['--container-shell'] if shell else []),
+                                          CODEX_CONTAINER_PODMAN=access, CODEX_YOLO=yolo,
+                                          CODEX_CONTAINER_PODMAN_SOCKET=str(self.sock_path),
+                                          FAKE_IMAGE_STATUS=str(image))
+                self.assertEqual(result.returncode, image if image not in (0, 1) else 0, result.stderr)
+                self.assertEqual(any(c[0] == 'build' for c in self.calls()), image == 1)
+                self.assertEqual(bool(self.creates()), image in (0, 1))
+        result = self.run_wrapper('--container-build', FAKE_IMAGE_STATUS='125')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(c[0] == 'image' for c in self.calls()))
+        for options in ([], ['--container-build']):
+            result = self.run_wrapper(*options, FAKE_IMAGE_STATUS='1', FAKE_BUILD_STATUS='42')
+            self.assertEqual(result.returncode, 42)
+            self.assertEqual(self.creates(), [])
+
+    def test_tmpfs_capacities_and_options(self):
+        for shell, access, yolo in itertools.product((False, True), ('0', '1'), ('0', '1')):
+            result = self.run_wrapper(*(['--container-shell'] if shell else []),
+                                      CODEX_CONTAINER_PODMAN=access, CODEX_YOLO=yolo,
+                                      CODEX_CONTAINER_PODMAN_SOCKET=str(self.sock_path))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            args = self.run_args()
+            mounts = [args[i + 1] for i, a in enumerate(args) if a == '--tmpfs']
+            self.assertEqual(mounts, ['/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
+                                      '/var/tmp:rw,exec,nosuid,nodev,mode=1777',
+                                      '/run:rw,nosuid,nodev,mode=1777,size=32m',
+                                      '/codex-home:rw,exec,nosuid,nodev,mode=1777'])
 
     def test_private_state_creation_and_mask(self):
         result = self.run_wrapper()
