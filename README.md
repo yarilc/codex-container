@@ -1,8 +1,10 @@
 # Codex CLI in Podman
 
 `codex-container.sh` runs Codex CLI in a rootless Podman container. The
-container uses the host Podman socket, allowing Codex to launch containers for
-tests and builds without running a nested daemon.
+image filesystem is read-only, with writable workspace, Codex state, and
+temporary storage. Set `CODEX_CONTAINER_PODMAN=1` to expose the host Podman
+socket and let Codex launch containers for tests and builds. The Podman command
+remains installed in both modes.
 
 ## Enable rootless Podman on the host
 
@@ -27,7 +29,13 @@ podman run --rm docker.io/library/alpine:latest id
 The first command must print `true`; the second must successfully start a
 container. Root inside that container is normal for rootless Podman.
 
-The wrapper also requires the host API socket at exactly
+## Optional host Podman API access
+
+Default sessions do not require an API service or socket. Skip this section
+and continue to Usage unless you want to enable `CODEX_CONTAINER_PODMAN=1`.
+Host Podman is still required to build and launch the Codex container.
+
+With that opt-in, the wrapper requires the host API socket at exactly
 `/run/user/$(id -u)/podman/podman.sock`. It does not use a custom
 `XDG_RUNTIME_DIR` to locate it. Choose **one** of the following methods.
 
@@ -89,7 +97,7 @@ Repeat this setup after reboot because `/run` is temporary. Export the same
 session does not set it automatically. Run the service and wrapper without
 `sudo` so they use your rootless containers and configuration.
 
-### Verify the socket before starting Codex
+### Verify the socket before enabling host access
 
 For either method, run these commands as the same user in the terminal where
 you will launch the wrapper:
@@ -107,7 +115,7 @@ See also the official
 
 ## Usage
 
-After completing the host setup and socket verification above, run from the
+After completing the rootless host setup above, run from the
 repository directory:
 
 ```bash
@@ -119,6 +127,21 @@ chmod +x codex-container.sh
 ./codex-container.sh --container-help
 CODEX_YOLO=1 ./codex-container.sh
 ```
+
+To allow access to the host Podman service, complete the optional socket setup
+and verification, then use:
+
+```bash
+CODEX_CONTAINER_PODMAN=1 ./codex-container.sh
+CODEX_CONTAINER_PODMAN=1 ./codex-container.sh --container-shell
+```
+
+Only the exact value `1` enables this integration. Unset, empty, and all other
+values (including `true`) disable it: the wrapper does not validate or mount
+the API socket and removes `CONTAINER_HOST` from the session environment.
+Existing users who launch child containers through the host service must now
+set `CODEX_CONTAINER_PODMAN=1`. Both modes use the same image, and
+`CODEX_CONTAINER_IMAGE` continues to override its name.
 
 OpenSpec is installed globally in the image. Initialize it once in each
 workspace where you want to use spec-driven development:
@@ -151,6 +174,7 @@ the next highest numeric index among running instances, for example
 `CODEX_YOLO=1` starts Codex with `--yolo`, disabling approvals and sandboxing.
 Use it only when the container and its mounts are considered an isolated,
 trusted environment.
+The image filesystem remains read-only even with `CODEX_YOLO=1`.
 
 ### Using Git worktrees
 
@@ -175,21 +199,35 @@ The flag does not create worktrees or require a Git repository.
 
 ## Mounts and security
 
+Both Codex and shell sessions use a read-only image root filesystem. The
+workspace and persistent Codex state remain writable host binds. `/tmp`,
+`/var/tmp`, `/run`, and `/codex-home` use writable temporary filesystems;
+files there are discarded when the container is removed, except for the
+nested persistent mount at `/codex-home/.codex`. Temporary build artifacts
+can execute in `/tmp`, `/var/tmp`, and `/codex-home`.
+
 By default, the current workspace is mounted at the same absolute path inside
 the container. With `--container-git-worktree`, its immediate physical parent
 is mounted at that same absolute path instead; the working directory and
 container naming still use the original launch directory. Preserving absolute
 paths is required because bind mounts for child containers are resolved by
 the host Podman service. Persistent configuration is stored in
-`~/.codex`, mounted at `$HOME/.codex`, and also selected through `CODEX_HOME`.
+`~/.codex` (or the host `CODEX_HOME` override), mounted at
+`/codex-home/.codex`, and also selected through the container's `CODEX_HOME`.
 
-The socket gives Codex control over containers and volumes available to the
-host Podman user. The wrapper does not use `--privileged` and does not install
-SSH clients or remote repository configuration.
+When enabled, the socket gives Codex control over containers and volumes
+available to the host Podman user. Without the opt-in, the client is still
+installed, but the wrapper supplies no connection to that service. This
+controls the wrapper's socket integration; it does not block independently
+configured endpoints or sockets exposed through workspace files. The wrapper
+does not use `--privileged` and does not install SSH clients or remote
+repository configuration.
 
 With `--container-git-worktree`, the selected parent can be your home directory
 or `/`, exposing all files beneath it read/write. Use the flag from a directory
-whose parent you intend to expose.
+whose parent you intend to expose. Writable binds take precedence over image
+paths they cover; mounting `/` can mask the image root, so the read-only image
+policy does not make such host files immutable.
 
 ## Included Tools
 

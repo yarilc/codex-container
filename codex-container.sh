@@ -10,9 +10,10 @@ usage() {
     cat <<'EOF'
 Usage: codex-container.sh [container option] [codex arguments...]
 
-Runs Codex in a Podman container. The current directory (or its parent with
---container-git-worktree) and ~/.codex are mounted read/write. Podman inside
-the container uses the host rootless socket.
+Runs Codex with a read-only image filesystem. The current directory (or its
+parent with --container-git-worktree) and CODEX_HOME are mounted read/write.
+/tmp, /var/tmp, /run, and HOME outside CODEX_HOME are writable and ephemeral.
+Podman is installed; host socket access requires CODEX_CONTAINER_PODMAN=1.
 
 Container options:
   --container-build      build or refresh the container image before starting
@@ -25,6 +26,8 @@ All other arguments are passed to Codex unchanged.
 
 Environment:
   CODEX_CONTAINER_IMAGE  image name (default: localhost/codex-cli:latest)
+  CODEX_CONTAINER_PODMAN expose the host Podman socket only when exactly 1
+                         (default: disabled; other values also disable access)
   CODEX_HOME             Codex home on the host (default: ~/.codex)
   CODEX_YOLO             enable Codex --yolo (default: disabled)
 EOF
@@ -80,9 +83,11 @@ case "${CODEX_YOLO:-}" in
     *) die "CODEX_YOLO must be 0, 1, true, false, yes, or no" ;;
 esac
 
-runtime_dir="/run/user/$(id -u)"
-socket="${runtime_dir}/podman/podman.sock"
-[[ -S "$socket" ]] || die "Podman socket not found: $socket (start 'podman system service --time=0' or enable podman.socket)"
+if [[ "${CODEX_CONTAINER_PODMAN:-}" == 1 ]]; then
+    runtime_dir="/run/user/$(id -u)"
+    socket="${runtime_dir}/podman/podman.sock"
+    [[ -S "$socket" ]] || die "Podman socket not found: $socket (start 'podman system service --time=0' or enable podman.socket)"
+fi
 
 if ((build_image)) || ! podman image exists "$IMAGE"; then
     podman build --tag "$IMAGE" --file "$SCRIPT_DIR/Containerfile" "$SCRIPT_DIR"
@@ -90,17 +95,29 @@ fi
 
 podman_args=(
     --rm --interactive --tty
+    --read-only --read-only-tmpfs=false
+    --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777
+    --tmpfs /var/tmp:rw,exec,nosuid,nodev,mode=1777
+    --tmpfs /run:rw,nosuid,nodev,mode=1777
+    --tmpfs /codex-home:rw,exec,nosuid,nodev,mode=1777
     --name "$(container_name)"
     --userns=keep-id
     --user "$(id -u):$(id -g)"
     --workdir "$WORKSPACE"
     --env HOME=/codex-home
     --env CODEX_HOME=/codex-home/.codex
-    --env CONTAINER_HOST=unix:///run/podman/podman.sock
     --volume "$workspace_mount:$workspace_mount:rw"
     --volume "$CODEX_DIR:/codex-home/.codex:rw"
-    --volume "$socket:/run/podman/podman.sock"
 )
+
+if [[ "${CODEX_CONTAINER_PODMAN:-}" == 1 ]]; then
+    podman_args+=(
+        --env CONTAINER_HOST=unix:///run/podman/podman.sock
+        --volume "$socket:/run/podman/podman.sock"
+    )
+else
+    podman_args+=(--unsetenv CONTAINER_HOST)
+fi
 
 if ((shell_mode)); then
     podman_args+=(--entrypoint /bin/bash)

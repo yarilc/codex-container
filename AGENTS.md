@@ -24,8 +24,13 @@ git diff --check                       # Check whitespace
 openspec validate --specs --strict      # Validate main specifications
 ```
 
-Start the required rootless socket with
+Host rootless Podman is required to build and launch the runtime. Only sessions
+using `CODEX_CONTAINER_PODMAN=1` require the API socket; start it with
 `podman system service --time=0 unix:///run/user/$(id -u)/podman/podman.sock`.
+The Podman command remains installed without the opt-in, but the wrapper omits
+the socket mount and removes `CONTAINER_HOST` from the session environment.
+Both Codex and shell modes use a read-only image root with writable workspace,
+persistent `CODEX_HOME`, and ephemeral `/tmp`, `/var/tmp`, `/run`, and home.
 Use `--container-git-worktree` from a worktree root to expose its immediate
 physical parent while preserving the starting directory.
 
