@@ -13,7 +13,7 @@ Usage: codex-container.sh [container option] [codex arguments...]
 Runs Codex with a read-only image filesystem. The current directory (or its
 parent with --container-git-worktree) and CODEX_HOME are mounted read/write.
 /tmp, /var/tmp, /run, and HOME outside CODEX_HOME are writable and ephemeral.
-/tmp is limited to 512 MiB and /run to 32 MiB; these are per-mount maxima.
+/tmp and /var/tmp are each limited to 512 MiB, /run to 32 MiB (per-mount maxima).
 TTY allocation requires terminal stdin and stdout; redirected stdin is retained.
 CODEX_HOME must be caller-owned, accessible, and private (no group/other
 permissions). Missing state is created with mode 0700; existing state is not
@@ -22,9 +22,11 @@ Podman is installed; host socket access requires CODEX_CONTAINER_PODMAN=1.
 Builds and sessions always require a verified Linux rootless launch engine.
 Use local Podman or an explicit same-host Unix CONTAINER_HOST; named and
 TCP/SSH connections are not supported. A Unix launch connection requires
-its service even when session socket access is disabled.
+an absolute socket path beyond / and its service, even without session access.
 Enabled access verifies that the socket serves a reachable rootless engine;
 rootful or unverifiable services stop startup before image operations.
+Verification expects one launch record or two delegated-socket records, with
+an optional single final LF. Additional records or CR characters are rejected.
 
 Container options:
   --container-build      build or refresh the container image before starting
@@ -48,6 +50,8 @@ Environment:
                          /run/user/<uid>, with /podman/podman.sock appended)
   CODEX_HOME             Codex home on the host (default: ~/.codex)
   CODEX_YOLO             enable Codex --yolo (default: disabled)
+                         1/true/yes enable; empty/0/false/no disable
+                         words are case-insensitive; other values are errors
 
 Socket access permits new host mounts beyond the workspace with the service
 user's authority. YOLO and socket access are independent. The service reports
@@ -84,20 +88,35 @@ fi
 command -v podman >/dev/null || die "podman is not installed on the host"
 
 codex_args=("${args[@]}")
-case "${CODEX_YOLO:-}" in
-    1|true|TRUE|yes|YES)
+yolo="${CODEX_YOLO:-}"
+case "${yolo,,}" in
+    1|true|yes)
         ((shell_mode)) || codex_args=(--yolo "${args[@]}")
         ;;
-    ''|0|false|FALSE|no|NO) ;;
+    ''|0|false|no) ;;
     *) die "CODEX_YOLO must be 0, 1, true, false, yes, or no" ;;
 esac
 
 [[ -z "${CONTAINER_CONNECTION:-}" ]] || die "Named Podman connections are not supported; use local Podman or a same-host Unix CONTAINER_HOST"
 case "${CONTAINER_HOST:-}" in
-    ''|unix:///?*) ;;
+    '') ;;
+    unix://*)
+        launch_socket=${CONTAINER_HOST#unix://}
+        [[ "$launch_socket" == /* && -n "${launch_socket//\//}" ]] || die "CONTAINER_HOST requires an absolute Unix socket path beyond /"
+        ;;
     *) die "Unsupported Podman connection; use local Podman or an absolute same-host Unix CONTAINER_HOST" ;;
 esac
-runtime_info=$(podman info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}') || die "Cannot query the launch engine; check local rootless Podman or the same-host Unix service"
+# Retain record boundaries through command substitution, including extra final LF.
+# Appending the sentinel only on success preserves failed query results.
+engine_response=''
+capture_engine_info() {
+    engine_response=$(podman "$@" && printf '\001') || return 1
+    engine_response=${engine_response%$'\001'}
+    engine_response=${engine_response%$'\n'}
+    [[ "$engine_response" != *$'\r'* ]]
+}
+capture_engine_info info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}' || die "Cannot query the launch engine or invalid response; check local rootless Podman or the same-host Unix service"
+runtime_info=$engine_response
 read -r rootless runtime_os service_remote extra <<< "$runtime_info"
 [[ "$rootless" == true && "$runtime_os" == linux && -z "$extra" && "$runtime_info" != *$'\n'* ]] || die "The launch engine must report Linux rootless operation; check Podman info and run as a non-root user"
 case "$service_remote" in
@@ -118,7 +137,8 @@ if [[ "${CODEX_CONTAINER_PODMAN:-}" == 1 ]]; then
     selected_socket="$socket"
     socket=$(readlink -f -- "$selected_socket") || die "Cannot resolve Podman socket: $selected_socket (check the path and permissions)"
     [[ -S "$socket" && -r "$socket" && -w "$socket" ]] || die "Podman socket not accessible: $selected_socket (start 'podman system service --time=0' or enable podman.socket; check socket permissions)"
-    socket_info=$(podman --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}}{{"\n"}}{{.Host.RemoteSocket.Path}}') || die "Cannot query Podman socket: $socket (check the service and socket permissions)"
+    capture_engine_info --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}}{{"\n"}}{{.Host.RemoteSocket.Path}}' || die "Cannot query Podman socket or invalid response: $socket (check the service and socket permissions)"
+    socket_info=$engine_response
     socket_rootless="${socket_info%%$'\n'*}"
     case "$socket_rootless" in
         true) ;;
@@ -160,7 +180,7 @@ podman_args=(
     --rm --interactive
     --read-only --read-only-tmpfs=false
     --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777,size=512m
-    --tmpfs /var/tmp:rw,exec,nosuid,nodev,mode=1777
+    --tmpfs /var/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m
     --tmpfs /run:rw,nosuid,nodev,mode=1777,size=32m
     --tmpfs /codex-home:rw,exec,nosuid,nodev,mode=1777
     --userns=keep-id

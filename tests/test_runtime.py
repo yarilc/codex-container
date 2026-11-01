@@ -228,7 +228,8 @@ class RuntimeTests(unittest.TestCase):
     def test_tmpfs_capacities_execution_and_exhaustion(self):
         script = '''python3 - <<'PYTHON'
 import errno, os, stat
-for path, expected in [('/tmp', 512 * 1024 * 1024), ('/run', 32 * 1024 * 1024)]:
+for path, expected in [('/tmp', 512 * 1024 * 1024), ('/var/tmp', 512 * 1024 * 1024),
+                       ('/run', 32 * 1024 * 1024)]:
     info = os.statvfs(path)
     assert info.f_blocks * info.f_frsize == expected, (path, info)
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o1777
@@ -259,7 +260,17 @@ printf workspace > capacity-sentinel
         self.assert_success(result)
         self.assertEqual((self.state / 'capacity-sentinel').read_text(), 'persistent')
         self.assertEqual((self.project / 'capacity-sentinel').read_text(), 'workspace')
-        self.assert_success(self.pipe_shell('test ! -e /run/exhaust\ntest ! -e /tmp/executable\n'))
+        self.assert_success(self.pipe_shell('''set -e
+test ! -e /run/exhaust
+test ! -e /tmp/executable
+test ! -e /var/tmp/executable
+python3 - <<'PYTHON'
+import os
+info = os.statvfs('/var/tmp')
+assert info.f_blocks * info.f_frsize == 536870912
+assert not info.f_flag & os.ST_NOEXEC
+PYTHON
+'''))
 
     def test_build_context_excludes_sensitive_and_unknown_inputs(self):
         context = self.base / 'build-context'

@@ -167,3 +167,77 @@ four requirements and `container-session` with seven requirements, and added
 two requirements to `runtime-filesystem`, preserving its existing requirements.
 All five resulting main specs passed strict validation, and every added
 requirement and scenario was compared with its delta before archival.
+
+## Runtime validation and temporary storage: 2026-11-01
+
+The `tighten-runtime-validation-and-temp-storage` checks used a Podman 4.3.1
+client and a Linux amd64 rootless Podman 4.9.3 service through an explicit
+same-host Unix connection. The service reported rootless `true` and
+service-remote `true`. Runtime fixtures used disposable native Linux volume
+storage through `tests/run-runtime.sh`, preserving host absolute paths and
+private test state. No actual Codex credentials were used or read.
+
+Endpoint regressions verify that `unix://`, `unix:///`, longer slash-only
+forms, and relative paths are rejected without any Podman call in Codex and
+shell modes, including explicit builds. Valid absolute paths, including a
+path with spaces and repeated leading slashes, remain supported. Existing
+synthetic local-engine and explicit-Unix checks also pass.
+
+Exact-byte response fixtures distinguish no final LF, one normal final LF,
+and extra trailing blank records. Both verification endpoints reject extra
+leading/interior/trailing records, invalid fields, CR characters, and failed
+queries that emit valid-looking output before image operations or state
+creation. The normal two-record delegated format and a host socket path
+containing spaces are retained. Existing print-based fixtures remain covered.
+
+YOLO regressions cover mixed-case enabled and disabled values, numeric values,
+empty and unset behavior, invalid and whitespace-padded values, both entrypoint
+modes, argument boundaries, explicit native `--yolo` with a disabled environment
+switch, read-only/workspace mounts, and exact delegation opt-in independently
+of YOLO normalization. Help, README, and repository guidance document these
+values and the endpoint/response boundaries.
+
+Synthetic creation arguments confirm `/var/tmp` uses
+`rw,exec,nosuid,nodev,mode=1777,size=512m` across session, delegation, and YOLO
+settings. Real statvfs and mode checks confirm its 536870912-byte capacity,
+mode 1777, nosuid/nodev flags, and execution support. A temporary executable
+runs successfully and disappears on the next session, where the capacity and
+execution policy are checked again. Existing `/run` exhaustion, other temporary
+locations, workspace, persistent state, and lifecycle checks continue to pass.
+Documentation now states all three capacities: `/tmp` and `/var/tmp` at
+512 MiB each and `/run` at 32 MiB. Ephemeral home has no explicit cap; the
+capacities are not reserved memory or a total container memory limit.
+
+Final results:
+
+- `python3 -B -m unittest discover -s tests -p test_wrapper.py -v`:
+  **39 synthetic tests passed** in 98.648 seconds, including parameterized
+  endpoint, response, YOLO, and mount cases.
+- `bash tests/run-runtime.sh`: **10 real-engine tests passed** in 37.248
+  seconds, including host service delegation, socket remapping, stdin/TTY
+  behavior, concurrent names, signals, cleanup, worktrees, storage, and
+  build-context filtering.
+- `bash -n codex-container.sh tests/run-runtime.sh`, `git diff --check`, and
+  strict validation of `tighten-runtime-validation-and-temp-storage`: passed.
+- `openspec validate --specs --strict`: all five current main specs passed;
+  synchronization of this change's three deltas remains a later workflow step.
+
+Actual local-engine execution without a Unix service endpoint was not repeated
+in this run; the real results cover explicit same-host Unix execution. Linux
+arm64, SELinux enforcing behavior, and Codex's internal command sandbox remain
+outside the verified coverage. A fresh production image build was unnecessary
+because image packages and build inputs were unchanged. No runtime resource
+limit was weakened to execute these tests.
+
+### Archive disposition
+
+On 2026-11-01, `tighten-runtime-validation-and-temp-storage` was synchronized
+and archived at
+`openspec/changes/archive/2026-11-01-tighten-runtime-validation-and-temp-storage/`
+with all ten tasks complete. Synchronization added one YOLO requirement to
+`container-session`, added two response/documentation requirements and updated
+the Unix endpoint requirement in `podman-access`, and updated both temporary
+storage capacity/documentation requirements in `runtime-filesystem`. Existing
+unaffected requirements and scenarios were preserved. Every added or modified
+block was compared with its delta, and all five main specs passed strict
+validation before archival. `todo.md` remains excluded by `.gitignore`.

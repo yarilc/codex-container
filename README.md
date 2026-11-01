@@ -41,6 +41,17 @@ when delegation to the Codex session is disabled. Named connections through
 rejected. Forwarded Unix sockets to other hosts are unsupported: Unix transport
 alone does not prove that the service is on the same physical host.
 
+Unix launch endpoints must contain an absolute socket path beyond `/`.
+`unix://`, `unix:///`, and longer slash-only forms such as `unix:////` are
+rejected before any Podman query. Valid absolute paths are preserved as supplied.
+
+Verification preserves record boundaries: the launch response has one record,
+and Codex's delegated response has two (`true`, then the absolute host socket
+path, including any spaces). Either response can omit its final LF or end in
+exactly one LF. Additional blank or nonblank records and CR characters are
+rejected before image operations or startup. A failed query remains an error
+even if its output looks valid.
+
 ## Optional host Podman API access
 
 Default local sessions do not require an API service or socket. Skip this section
@@ -261,6 +272,12 @@ printf 'pwd\nexit 0\n' | ./codex-container.sh --container-shell
 ```
 
 `CODEX_YOLO=1` starts Codex with `--yolo`, disabling approvals and sandboxing.
+`CODEX_YOLO` accepts `1`, `true`, and `yes` to enable it, and unset, empty,
+`0`, `false`, or `no` to disable it. Words are case-insensitive, so `TrUe`
+and `YeS` enable it and `FaLsE` and `nO` disable it. Other values, including
+words surrounded by spaces, stop startup with an error. Shell mode validates
+the value but does not add Codex arguments. This parsing does not change the
+exact `CODEX_CONTAINER_PODMAN=1` opt-in or explicit native CLI arguments.
 Use it only when the container and its mounts are considered an isolated,
 trusted environment.
 The image filesystem remains read-only even with `CODEX_YOLO=1`.
@@ -351,12 +368,13 @@ files there are discarded when the container is removed, except for the
 nested persistent mount at `/codex-home/.codex`. Temporary build artifacts
 can execute in `/tmp`, `/var/tmp`, and `/codex-home`.
 
-`/tmp` has a 512 MiB maximum and `/run` a 32 MiB maximum. Both retain mode
-1777, `nosuid`, and `nodev`; `/tmp` retains executable storage and `/run` keeps
-its existing execution policy. These are per-mount capacities, not reserved
-memory or a total container memory limit. This policy adds no explicit capacity
-to `/var/tmp` or ephemeral home. Writes can fail when a bounded mount fills;
-workspace and persistent state remain separate host storage.
+`/tmp` and `/var/tmp` each have a 512 MiB maximum and `/run` a 32 MiB maximum.
+All three retain mode 1777, `nosuid`, and `nodev`; `/tmp` and `/var/tmp` retain
+executable storage and `/run` keeps its existing execution policy. These are
+per-mount capacities, not reserved memory or a total container memory limit.
+Ephemeral home has no explicit capacity imposed by this policy. Writes can fail
+when a bounded mount fills; workspace and persistent state remain separate host
+storage.
 
 By default, the current workspace is mounted at the same absolute path inside
 the container. With `--container-git-worktree`, its immediate physical parent

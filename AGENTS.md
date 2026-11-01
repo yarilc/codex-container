@@ -56,6 +56,17 @@ State checks do not audit ancestors, ACLs, or every existing file.
 Use `--container-git-worktree` from a worktree root to expose its immediate
 physical parent while preserving the starting directory.
 
+Reject Unix launch paths consisting only of slash characters before any Podman
+query. Preserve response boundaries during verification: accept one launch
+record or two delegated-socket records with zero or one final LF, rejecting
+extra blank/nonblank records and CR characters before image operations.
+Preserve the complete delegated host path, including spaces, and keep query
+errors as failures even if their output looks valid. Normalize CODEX_YOLO
+words case-insensitively: 1/true/yes enable, unset/empty/0/false/no disable,
+and other values (including padded words) fail. Shell mode validates the value
+without adding Codex arguments. The exact Podman opt-in and native arguments
+remain independent.
+
 Sessions reserve directory/index names atomically with create, using both
 running and stopped names. Parse one to nine decimal digits in base ten,
 propagate listing errors, and retry only confirmed collisions, at most 20 times.
@@ -68,10 +79,10 @@ five seconds plus a one-second kill allowance, and final client reaping to
 five seconds. Report cleanup failures without overriding the primary status.
 SIGKILL and engine loss can leave residual containers.
 Allocate a TTY only when stdin and stdout are terminals, retaining redirected
-stdin and EOF. `/tmp` is capped at 512 MiB and `/run` at 32 MiB, preserving
-permissions and executable temporary locations. These are per-mount maxima,
-not reserved memory or a container memory limit; `/var/tmp` and home gain no
-explicit capacity. Build automatically only for image-existence status 1;
+stdin and EOF. `/tmp` and `/var/tmp` are capped at 512 MiB each and `/run` at
+32 MiB, preserving permissions and executable temporary locations. These are per-mount maxima,
+not reserved memory or a container memory limit; ephemeral home has no explicit
+capacity. Build automatically only for image-existence status 1;
 other inspection errors stop startup. The default-deny `.containerignore`
 permits only the root Containerfile as an application input; future local
 COPY/ADD sources need deliberate inclusion.

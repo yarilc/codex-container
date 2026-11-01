@@ -19,10 +19,10 @@ args = sys.argv[1:]
 with open(os.environ['FAKE_LOG'], 'a') as log:
     log.write(json.dumps(args) + '\n')
 if args[0] == 'info':
-    print(os.environ.get('FAKE_INFO', 'true linux false'))
+    sys.stdout.write(os.environ['FAKE_INFO_RAW']) if 'FAKE_INFO_RAW' in os.environ else print(os.environ.get('FAKE_INFO', 'true linux false'))
     sys.exit(int(os.environ.get('FAKE_INFO_STATUS', '0')))
 elif args[:2] == ['--remote', '--url']:
-    print(os.environ.get('FAKE_SOCKET_INFO', 'true\n/host/podman.sock'))
+    sys.stdout.write(os.environ['FAKE_SOCKET_INFO_RAW']) if 'FAKE_SOCKET_INFO_RAW' in os.environ else print(os.environ.get('FAKE_SOCKET_INFO', 'true\n/host/podman.sock'))
     sys.exit(int(os.environ.get('FAKE_SOCKET_STATUS', '0')))
 elif args[0] == 'ps':
     print(os.environ.get('FAKE_NAMES', ''))
@@ -171,6 +171,92 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
         self.assertIn('--unsetenv', self.run_args())
+
+    def test_slash_only_endpoints_rejected_before_podman(self):
+        endpoints = ('unix://', 'unix:///', 'unix:////', 'unix:////////', 'unix://relative')
+        for shell, build, endpoint in itertools.product((False, True), (False, True), endpoints):
+            with self.subTest(shell=shell, build=build, endpoint=endpoint):
+                options = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
+                self.assert_rejected(self.run_wrapper(*options, CONTAINER_HOST=endpoint))
+                self.assertEqual(self.calls(), [])
+                self.assertFalse(self.state.exists())
+        for endpoint in ('unix:///run/user/1000/podman/podman.sock', 'unix:////visible/socket with spaces.sock'):
+            result = self.run_wrapper(CONTAINER_HOST=endpoint, FAKE_INFO='true linux true')
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_verification_normal_terminators_and_socket_spaces(self):
+        for shell, build, launch_end, socket_end in itertools.product((False, True), (False, True), ('', '\n'), ('', '\n')):
+            with self.subTest(shell=shell, build=build, launch_end=launch_end, socket_end=socket_end):
+                options = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
+                result = self.run_wrapper(*options, CODEX_CONTAINER_PODMAN='1',
+                                          CODEX_CONTAINER_PODMAN_SOCKET=str(self.sock_path),
+                                          FAKE_INFO_RAW='true linux false' + launch_end,
+                                          FAKE_SOCKET_INFO_RAW='true\n/host/socket with spaces.sock' + socket_end)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('/host/socket with spaces.sock:/run/podman/podman.sock:rw', self.run_args())
+
+    def test_extra_launch_records_are_not_trimmed(self):
+        valid = 'true linux false'
+        invalid = [valid + '\n\n', valid + '\n\n\n', '\n' + valid + '\n',
+                   valid + '\nextra\n', valid + '\r\n', 'true\nlinux false\n',
+                   'true linux false extra\n', '\n', '']
+        for shell, build, access, response in itertools.product((False, True), (False, True), ('0', '1'), invalid):
+            with self.subTest(shell=shell, build=build, access=access, response=response):
+                options = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
+                self.assert_rejected(self.run_wrapper(*options, CODEX_CONTAINER_PODMAN=access,
+                                                      FAKE_INFO_RAW=response))
+                self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
+                self.assertFalse(self.state.exists())
+
+    def test_extra_delegation_records_are_not_trimmed(self):
+        valid = 'true\n/host/podman.sock'
+        invalid = [valid + '\n\n', valid + '\n\n\n', '\n' + valid + '\n',
+                   'true\n\n/host/podman.sock\n', valid + '\nextra\n', valid + '\r\n',
+                   'true\n', 'true\nrelative\n', 'false\n/host/podman.sock\n', '']
+        for shell, build, response in itertools.product((False, True), (False, True), invalid):
+            with self.subTest(shell=shell, build=build, response=response):
+                options = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
+                self.assert_rejected(self.run_wrapper(*options, CODEX_CONTAINER_PODMAN='1',
+                                                      CODEX_CONTAINER_PODMAN_SOCKET=str(self.sock_path),
+                                                      FAKE_SOCKET_INFO_RAW=response))
+                self.assertFalse(self.state.exists())
+
+    def test_failed_queries_with_valid_looking_raw_output(self):
+        for shell, build, endpoint in itertools.product((False, True), (False, True), ('launch', 'delegation')):
+            with self.subTest(shell=shell, build=build, endpoint=endpoint):
+                options = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
+                response = {'FAKE_INFO_RAW': 'true linux false\n', 'FAKE_INFO_STATUS': '125'} if endpoint == 'launch' else {
+                    'FAKE_SOCKET_INFO_RAW': 'true\n/host/podman.sock\n', 'FAKE_SOCKET_STATUS': '125'}
+                self.assert_rejected(self.run_wrapper(*options, CODEX_CONTAINER_PODMAN='1',
+                                                      CODEX_CONTAINER_PODMAN_SOCKET=str(self.sock_path), **response))
+
+    def test_yolo_case_insensitive_and_delegation_independent(self):
+        values = ('1', 'true', 'TrUe', 'yes', 'YeS', '', '0', 'false', 'FaLsE', 'no', 'nO')
+        for shell, access, value in itertools.product((False, True), ('1', 'TrUe', 'YeS'), values):
+            with self.subTest(shell=shell, access=access, value=value):
+                options = ['--container-shell'] if shell else []
+                result = self.run_wrapper(*options, 'exec', 'prompt with spaces', '',
+                                          CODEX_YOLO=value, CODEX_CONTAINER_PODMAN=access,
+                                          CODEX_CONTAINER_PODMAN_SOCKET=str(self.sock_path))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = self.run_args()
+                self.assertEqual('--yolo' in args, not shell and value.lower() in ('1', 'true', 'yes'))
+                self.assertEqual(any(c[0] == '--remote' for c in self.calls()), access == '1')
+                self.assertIn('--read-only', args)
+                self.assertIn(f'{self.project}:{self.project}:rw', args)
+                if not shell:
+                    self.assertEqual(args[-3:], ['exec', 'prompt with spaces', ''])
+                    if value.lower() in ('1', 'true', 'yes'):
+                        self.assertEqual(args[-4], '--yolo')
+        result = self.run_wrapper('--yolo', 'exec', 'prompt', CODEX_YOLO='FaLsE')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.run_args()[-4:], ['localhost/codex-cli:latest', '--yolo', 'exec', 'prompt'])
+        for shell, value in itertools.product((False, True), ('enabled', '2', ' true ', 'YeS ', ' FaLsE')):
+            options = ['--container-shell'] if shell else []
+            result = self.run_wrapper(*options, CODEX_YOLO=value)
+            self.assert_rejected(result)
+            self.assertEqual(self.calls(), [])
+            self.assertIn('CODEX_YOLO must be', result.stderr)
 
 
     def run_args(self):
@@ -377,7 +463,7 @@ class WrapperTests(unittest.TestCase):
             args = self.run_args()
             mounts = [args[i + 1] for i, a in enumerate(args) if a == '--tmpfs']
             self.assertEqual(mounts, ['/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
-                                      '/var/tmp:rw,exec,nosuid,nodev,mode=1777',
+                                      '/var/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
                                       '/run:rw,nosuid,nodev,mode=1777,size=32m',
                                       '/codex-home:rw,exec,nosuid,nodev,mode=1777'])
 

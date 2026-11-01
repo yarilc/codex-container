@@ -1,5 +1,4 @@
 .agents
 __pycache__/
 .test-state/
-misalignment.md
 todo.md
