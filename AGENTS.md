@@ -74,9 +74,18 @@ Track the created full ID and use it exclusively for signals and cleanup;
 never replace an existing container or clean up by a reusable name. Preserve
 application exit statuses including 125. Forward TERM/INT/HUP and return
 143/130/129 for wrapper interruptions. Reconcile pending creation before
-cleanup; bound graceful shutdown to five seconds, engine control calls to
-five seconds plus a one-second kill allowance, and final client reaping to
-five seconds. Report cleanup failures without overriding the primary status.
+cleanup: allow five seconds for completion, then TERM with five seconds before
+KILL and one further second to observe client termination. Recover the full ID
+from the private CID record after cancellation; without verified ownership
+report unresolved creation and require explicit engine inspection. Cancellation
+does not prove the engine request stopped. Preserve the first interruption
+status and never renew deadlines for repeated signals. Report an unreapable
+client's PID instead of waiting indefinitely. Interrupted creation has up to
+17 seconds of separate phase budgets, excluding scheduling overhead.
+Bound graceful shutdown to five seconds and engine control calls to five
+seconds plus a one-second kill allowance. Local client cancellation allows
+five seconds after TERM plus one second after KILL. Report cleanup failures
+without overriding the primary status.
 SIGKILL and engine loss can leave residual containers.
 Allocate a TTY only when stdin and stdout are terminals, retaining redirected
 stdin and EOF. `/tmp` and `/var/tmp` are capped at 512 MiB each and `/run` at

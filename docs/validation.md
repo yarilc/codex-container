@@ -241,3 +241,66 @@ storage capacity/documentation requirements in `runtime-filesystem`. Existing
 unaffected requirements and scenarios were preserved. Every added or modified
 block was compared with its delta, and all five main specs passed strict
 validation before archival. `todo.md` remains excluded by `.gitignore`.
+
+## Bounded interrupted creation (2026-11-01)
+
+Change: `bound-interrupted-container-creation`.
+
+Real-engine regression verification used `bash tests/run-runtime.sh` against
+same-host Linux rootless Podman, with disposable native Linux volume storage,
+private application state, and no Codex credentials. All 10 runtime tests passed
+in 59.071 seconds. Coverage includes concurrent reservation alongside a stopped
+container, signal delivery and owned cleanup, an application ignoring TERM,
+exit 125, nonterminal input and PTY handling, persistent and ephemeral storage,
+mount boundaries, linked worktrees, child-container binds, and a containerized
+caller with a remapped service socket. The existing runtime image was reused;
+the Containerfile and dependencies did not change. Build-context verification
+ran through its disposable verification image as part of the runtime suite.
+
+These are real-engine regression results, not an injected engine hang or outage.
+Permanent creation stalls, late CID publication, invalid identities, and client
+reaping failure are exercised separately with synthetic Podman responses and
+fault injection. Cancellation of a local client cannot establish that an
+engine-side create request stopped; unknown outcomes still require explicit
+engine inspection.
+
+Focused final checks passed for a stopped (SIGSTOP) creation client, complete
+CID validation including NUL/CR/extra-record rejection, and failed or stalled
+owned removal. The SIGSTOP regression confirms stopped children remain tracked
+until cancellation instead of reaching an unconditional live-child wait.
+A separate real-engine signal/owned-cleanup rerun passed after the final child
+tracking change (1 test, 13.556 seconds). A shell fault-injection check exercises
+the production reaping helper with a client still reported present after KILL;
+it verifies the PID diagnostic and absence of an unconditional wait, without
+creating a real uninterruptible process.
+
+Final validation commands passed:
+
+- `bash -n codex-container.sh`.
+- `git diff --check`.
+- `python3 -B -m unittest discover -s tests -p test_wrapper.py -v`: all
+  43 tests passed, including 18 permanent-stall signal/mode combinations,
+  seven invalid-identity/control-failure cases, successful bounded creation
+  reconciliation, repeated mixed signals, the stopped-client regression, and
+  the unreapable-client fault injection. Permanent-stall fixtures never receive
+  a release; tests assert elapsed bounds, client disappearance, no application
+  start or retry, full-ID-only removal, and private bookkeeping cleanup.
+- `openspec validate bound-interrupted-container-creation --strict`.
+- `openspec validate --specs --strict`: all five main specifications passed.
+
+The outstanding item in `todo.md` is closed.
+There were no skipped or unavailable checks in the requested synthetic and
+real-engine suites. No actual engine hang, outage, uninterruptible process,
+SIGKILL recovery, or new production image build is claimed.
+
+### Archive disposition
+
+On 2026-11-03, `bound-interrupted-container-creation` was synchronized and
+archived at
+`openspec/changes/archive/2026-11-03-bound-interrupted-container-creation/`
+with all nine tasks complete. The `container-session` main specification gained
+one requirement for bounded interrupted creation and updated its owned-cleanup
+and session-documentation requirements. All added and modified requirement
+blocks were compared with the delta, preserving unaffected requirements and
+existing scenarios. Strict change validation, all five main specifications,
+Bash syntax, and whitespace checks passed before archival.

@@ -250,16 +250,27 @@ container to obtain a name. Application exit codes, including 125, pass through
 without retrying execution, and cleanup failures do not replace that status.
 TERM, INT, and HUP sent to the wrapper are forwarded to its running container;
 wrapper interruption exits are 143, 130, and 129 respectively. A signal during
-creation is recorded until the creation result can be reconciled, then the
-owned container is removed without starting its application.
+creation allows up to five seconds for the client to finish, then sends TERM
+to the local client, allows up to five more seconds before KILL, and allows
+one further second to observe termination. The wrapper then recovers any full
+owned ID from its private CID file and attempts removal without starting the
+application. The first signal selects the interruption status; repeated signals
+do not renew deadlines or replace that status. A client that cannot be reaped
+within its limit is reported rather than waited on indefinitely.
 
 After forwarding a signal, graceful shutdown allows up to five seconds before
 forced removal. Engine control commands have five-second deadlines (plus a
-one-second forced termination allowance); final client reaping is also bounded
-at five seconds. These are separate phases, not a five-second total deadline.
+one-second forced termination allowance); local client cancellation allows
+five seconds after TERM and one further second after KILL. These are separate
+phases, not a five-second total deadline.
 SIGKILL, host failure, or engine loss can leave residual containers; failed
-cleanup reports the owned ID for explicit removal. Creation reconciliation
-requires a responsive engine. Normal engine auto-removal remains enabled.
+cleanup reports the owned ID for explicit removal. Cancelling the local client
+does not prove the engine stopped creating the container. Without a verified
+owned ID, the wrapper reports an unresolved creation outcome and requires
+explicit engine inspection; it never removes by a guessed name. Interrupted
+creation budgets up to 17 seconds across completion, client cancellation/reaping,
+and removal, excluding scheduling overhead. Uninterrupted creation has no new
+timeout. Normal engine auto-removal remains enabled.
 
 Both Codex and shell modes allocate a TTY only when stdin and stdout are
 terminals. Pipes, file input, and redirected output retain stdin forwarding and

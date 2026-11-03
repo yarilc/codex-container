@@ -44,14 +44,33 @@ elif args[0] == 'create':
         print('synthetic create failure', file=sys.stderr)
         sys.exit(status)
     cid = 'a' * 64
-    pathlib.Path(args[args.index('--cidfile') + 1]).write_text(cid + '\n')
+    cidfile = pathlib.Path(args[args.index('--cidfile') + 1])
+    mode = os.environ.get('FAKE_CREATE_MODE', '')
+    def publish():
+        cidfile.write_text(cid + '\0\n' if os.environ.get('FAKE_CID_NUL')
+                           else os.environ.get('FAKE_CID_RAW', cid + '\n'))
+    if mode == 'cid-on-term':
+        def on_term(signum, frame):
+            publish()
+            sys.exit(42)
+        signal.signal(signal.SIGTERM, on_term)
+    elif os.environ.get('FAKE_CLIENT_IGNORE_TERM'):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    if mode not in ('stall', 'cid-on-term'):
+        publish()
     if os.environ.get('FAKE_CREATE_BARRIER'):
         barrier = pathlib.Path(os.environ['FAKE_CREATE_BARRIER'])
+        barrier.with_suffix('.pid').write_text(str(os.getpid()))
         barrier.with_suffix('.ready').touch()
+        if mode:
+            while True: time.sleep(0.01)
         while not barrier.with_suffix('.release').exists(): time.sleep(0.01)
     print(cid)
 elif args[0] in ('kill', 'rm'):
-    if os.environ.get('FAKE_CONTROL_STALL') == args[0]: time.sleep(30)
+    if os.environ.get('FAKE_CONTROL_STALL') == args[0]:
+        if os.environ.get('FAKE_CONTROL_IGNORE_TERM'):
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        while True: time.sleep(0.01)
     status = int(os.environ.get('FAKE_' + args[0].upper() + '_STATUS', '0'))
     if not status and os.environ.get('FAKE_SESSION'):
         if args[0] == 'rm' or not os.environ.get('FAKE_IGNORE_SIGNAL'):
@@ -278,8 +297,11 @@ class WrapperTests(unittest.TestCase):
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, start_new_session=True)
         def stop():
-            if process.poll() is None:
+            # Also terminate leaked children when a broken wrapper exits early.
+            try:
                 os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             process.communicate(timeout=5)
         self.addCleanup(stop)
         return process
@@ -348,11 +370,13 @@ class WrapperTests(unittest.TestCase):
                 self.assertEqual('Cannot remove owned' in result.stderr, removal != '0')
 
     def test_signals_during_creation(self):
-        for sig, status in ((signal.SIGTERM, 143), (signal.SIGINT, 130), (signal.SIGHUP, 129)):
-            with self.subTest(sig=sig):
+        for shell, (sig, status) in itertools.product((False, True), (
+                (signal.SIGTERM, 143), (signal.SIGINT, 130), (signal.SIGHUP, 129))):
+            with self.subTest(shell=shell, sig=sig):
                 self.log.unlink(missing_ok=True)
-                barrier = self.base / f'create-{sig}'
-                process = self.start_wrapper(FAKE_CREATE_BARRIER=str(barrier))
+                barrier = self.base / f'create-{shell}-{sig}'
+                process = self.start_wrapper(*(['--container-shell'] if shell else []),
+                                             FAKE_CREATE_BARRIER=str(barrier))
                 self.wait_path(barrier.with_suffix('.ready'), process)
                 process.send_signal(sig)
                 # The client completes only after the parent has received the signal.
@@ -362,6 +386,113 @@ class WrapperTests(unittest.TestCase):
                 self.assertEqual(process.returncode, status, out + err)
                 self.assertFalse(any(c[0] == 'start' for c in self.calls()))
                 self.assert_owned_cleanup()
+
+    def test_permanently_stalled_creation_signal_matrix(self):
+        for shell, sig, mode in itertools.product(
+                (False, True), (signal.SIGTERM, signal.SIGINT, signal.SIGHUP),
+                ('stall', 'stall-owned', 'cid-on-term')):
+            with self.subTest(shell=shell, signal=sig, mode=mode):
+                self.log.unlink(missing_ok=True)
+                barrier = self.base / f'stall-{shell}-{sig}-{mode}'
+                process = self.start_wrapper(*(['--container-shell'] if shell else []),
+                                             FAKE_CREATE_BARRIER=str(barrier),
+                                             FAKE_CREATE_MODE=mode,
+                                             FAKE_CLIENT_IGNORE_TERM='1' if mode == 'stall' else '')
+                self.wait_path(barrier.with_suffix('.ready'), process)
+                child = int(barrier.with_suffix('.pid').read_text())
+                started = time.monotonic()
+                process.send_signal(sig)
+                # Repeated mixed signals must neither replace status nor renew waits.
+                for later in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+                    time.sleep(0.1)
+                    process.send_signal(later)
+                out, err = process.communicate(timeout=25)
+                elapsed = time.monotonic() - started
+                self.assertLess(elapsed, 25, out + err)
+                # A permanent stall was cancelled, never released to finish normally.
+                self.assertFalse(barrier.with_suffix('.release').exists())
+                self.assertGreater(elapsed, 3)
+                self.assertEqual(process.returncode, 128 + sig, out + err)
+                self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+                self.assertEqual(len(self.creates()), 1)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child, 0)
+                cidfile = Path(self.run_args()[self.run_args().index('--cidfile') + 1])
+                self.assertFalse(cidfile.parent.exists())
+                if mode == 'stall':
+                    self.assertIn('Creation outcome unresolved', err)
+                    self.assertFalse(any(c[0] in ('rm', 'kill') for c in self.calls()))
+                else:
+                    self.assert_owned_cleanup()
+                    self.assertNotIn('Creation outcome unresolved', err)
+
+    def test_interrupted_creation_invalid_identity_and_control_failures(self):
+        cases = (
+            {'FAKE_CID_NUL': '1'},
+            {'FAKE_CID_RAW': 'invalid\n'},
+            {'FAKE_CID_RAW': 'a' * 64 + '\n' + 'b' * 64 + '\n'},
+            {'FAKE_CID_RAW': 'a' * 64 + '\n\n'},
+            {'FAKE_CID_RAW': 'a' * 64 + '\r\n'},
+            {'FAKE_RM_STATUS': '125'},
+            {'FAKE_CONTROL_STALL': 'rm', 'FAKE_CONTROL_IGNORE_TERM': '1'},
+        )
+        for index, env in enumerate(cases):
+            with self.subTest(env=env):
+                self.log.unlink(missing_ok=True)
+                barrier = self.base / f'invalid-control-{index}'
+                process = self.start_wrapper(FAKE_CREATE_BARRIER=str(barrier),
+                                             FAKE_CREATE_MODE='stall-owned', **env)
+                self.wait_path(barrier.with_suffix('.ready'), process)
+                started = time.monotonic()
+                process.send_signal(signal.SIGINT)
+                out, err = process.communicate(timeout=25)
+                self.assertLess(time.monotonic() - started, 25)
+                self.assertEqual(process.returncode, 130, out + err)
+                self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+                cidfile = Path(self.run_args()[self.run_args().index('--cidfile') + 1])
+                self.assertFalse(cidfile.parent.exists())
+                if 'FAKE_CID_RAW' in env or 'FAKE_CID_NUL' in env:
+                    self.assertIn('Invalid container ID', err)
+                    self.assertIn('Creation outcome unresolved', err)
+                    self.assertFalse(any(c[0] == 'rm' for c in self.calls()))
+                else:
+                    self.assert_owned_cleanup()
+                    self.assertIn('Cannot remove owned container ' + 'a' * 64, err)
+
+    def test_stopped_creation_client_is_cancelled(self):
+        barrier = self.base / 'stopped-create'
+        process = self.start_wrapper(FAKE_CREATE_BARRIER=str(barrier),
+                                     FAKE_CREATE_MODE='stall-owned')
+        self.wait_path(barrier.with_suffix('.ready'), process)
+        child = int(barrier.with_suffix('.pid').read_text())
+        os.kill(child, signal.SIGSTOP)
+        process.send_signal(signal.SIGTERM)
+        out, err = process.communicate(timeout=25)
+        self.assertEqual(process.returncode, 143, out + err)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child, 0)
+        self.assert_owned_cleanup()
+        self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+
+    def test_unreapable_client_reports_without_waiting(self):
+        # Fault injection models a child still present after KILL without leaking
+        # a real uninterruptible process. Exercise the production helper verbatim.
+        source = WRAPPER.read_text()
+        helpers = source[source.index('client_running() {'):source.index('cleanup() {')]
+        harness = helpers + '''
+client_pid=424242
+client_running() { return 0; }
+wait_for_client_until() { return 1; }
+kill() { printf '%s\\n' "$*"; }
+wait() { printf 'unexpected wait\\n'; exit 99; }
+reap_client
+[[ -z "$client_pid" ]]
+'''
+        result = subprocess.run(['bash', '-euc', harness], text=True,
+                                capture_output=True, timeout=2)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ['-TERM 424242', '-KILL 424242'])
+        self.assertIn('Cannot reap Podman client 424242', result.stderr)
 
     def test_attached_signals_both_modes(self):
         for shell, sig in itertools.product((False, True),

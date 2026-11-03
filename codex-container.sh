@@ -38,6 +38,12 @@ Container options:
 All other arguments are passed to Codex unchanged.
 TERM/INT/HUP are forwarded to the owned session; interruption exits are
 143/130/129. Graceful shutdown allows five seconds before forced cleanup.
+Interrupted creation allows five seconds to finish, then cancels its client
+with TERM (five seconds) and KILL (one second to observe termination).
+Owned removal allows five seconds plus one second for forced client termination.
+Repeated signals preserve the first status and do not renew these deadlines.
+Creation without a verified owned ID is reported for explicit engine inspection;
+local client cancellation does not prove the engine request stopped.
 Only this invocation's container is removed. SIGKILL or engine loss can leave
 residual containers requiring explicit cleanup.
 
@@ -215,43 +221,90 @@ client_pid=''
 session_tmp=''
 pending_signal=''
 pending_status=0
-signal_epoch=0
 attached=0
+creating=0
 
 record_signal() {
-    signal_epoch=$((signal_epoch + 1))
     if ((pending_status == 0)); then
         pending_signal=$1
         pending_status=$2
     fi
-    if ((attached)) && [[ -n "$client_pid" ]]; then
+    if ((attached || creating)) && [[ -n "$client_pid" ]]; then
         exit "$pending_status"
     fi
 }
 
-# A trapped signal interrupts wait without necessarily reaping the child.
+# An interrupted create enters EXIT reconciliation with its PID still tracked.
 wait_for_create() {
-    local epoch status
-    while :; do
-        epoch=$signal_epoch
-        status=0
-        wait "$client_pid" || status=$?
-        ((epoch == signal_epoch)) || continue
-        return "$status"
-    done
+    ((pending_status == 0)) || exit "$pending_status"
+    local status=0
+    wait "$client_pid" || status=$?
+    ((pending_status == 0)) || exit "$pending_status"
+    return "$status"
+}
+
+# Consult Bash's child table rather than potentially recycled process IDs.
+client_running() {
+    local child
+    [[ -n "$client_pid" ]] || return 1
+    while IFS= read -r child; do
+        [[ "$child" != "$client_pid" ]] || return 0
+    done < <(jobs -p)
+    return 1
 }
 
 wait_for_client_until() {
     local deadline=$1
-    while kill -0 "$client_pid" 2>/dev/null; do
+    while client_running; do
         ((SECONDS < deadline)) || return 1
         sleep 0.05
     done
 }
 
+reap_client() {
+    [[ -n "$client_pid" ]] || return 0
+    if client_running; then
+        kill -TERM "$client_pid" 2>/dev/null || true
+        if ! wait_for_client_until "$((SECONDS + 5))"; then
+            kill -KILL "$client_pid" 2>/dev/null || true
+        fi
+    fi
+    if wait_for_client_until "$((SECONDS + 1))"; then
+        wait "$client_pid" 2>/dev/null || true
+    else
+        printf 'codex-container: Cannot reap Podman client %s within deadline; inspect it explicitly\n' "$client_pid" >&2
+    fi
+    client_pid=''
+}
+
+recover_container_id() {
+    local recovered='' has_nul=0
+    [[ -z "$container_id" && -n "$session_tmp" && -s "$session_tmp/cid" ]] || return 0
+    # read preserves all LFs; a NUL delimiter is itself invalid CID data.
+    IFS= read -r -d '' recovered < "$session_tmp/cid" && has_nul=1
+    recovered=${recovered%$'\n'}
+    if ((has_nul)) || [[ ! "$recovered" =~ ^[a-f0-9]{64}$ ]]; then
+        printf 'codex-container: Invalid container ID in private creation record; inspect creation explicitly\n' >&2
+        return 1
+    fi
+    container_id=$recovered
+}
+
 cleanup() {
     local status=$? control_status
     trap '' TERM INT HUP
+    ((pending_status == 0)) || status=$pending_status
+    if ((creating)); then
+        if [[ -n "$client_pid" ]]; then
+            wait_for_client_until "$((SECONDS + 5))" || true
+            reap_client
+        fi
+        # The client can publish its CID while responding to cancellation.
+        recover_container_id || true
+        if ((pending_status)) && [[ -z "$container_id" ]]; then
+            printf 'codex-container: Creation outcome unresolved for %s (no verified owned ID); inspect the engine explicitly\n' "$name" >&2
+        fi
+    fi
     if [[ -n "$container_id" ]]; then
         if ((pending_status && attached)); then
             if timeout --kill-after=1s 5s podman kill --signal "$pending_signal" "$container_id" >/dev/null; then
@@ -266,13 +319,7 @@ cleanup() {
             printf 'codex-container: Cannot remove owned container %s (status %s); check the engine and remove it explicitly\n' "$container_id" "$control_status" >&2
         fi
     fi
-    if [[ -n "$client_pid" ]]; then
-        kill -TERM "$client_pid" 2>/dev/null || true
-        if ! wait_for_client_until "$((SECONDS + 5))"; then
-            kill -KILL "$client_pid" 2>/dev/null || true
-        fi
-        wait "$client_pid" 2>/dev/null || true
-    fi
+    reap_client
     [[ -z "$session_tmp" ]] || rm -rf -- "$session_tmp"
     return "$status"
 }
@@ -298,17 +345,15 @@ for ((attempt=0; attempt<20; attempt++)); do
     ((pending_status == 0)) || exit "$pending_status"
     name="$container_prefix-$next_index"
     rm -f -- "$session_tmp/cid"
+    creating=1
     podman create --name "$name" --cidfile "$session_tmp/cid" "${podman_args[@]}" "$IMAGE" "${codex_args[@]}" \
         </dev/null >"$session_tmp/output" 2>"$session_tmp/error" &
     client_pid=$!
     create_status=0
     wait_for_create || create_status=$?
     client_pid=''
-    # The private CID file remains authoritative if a signal interrupted wait.
-    if [[ -s "$session_tmp/cid" ]]; then
-        IFS= read -r container_id < "$session_tmp/cid" || true
-        [[ "$container_id" =~ ^[a-f0-9]{64}$ ]] || { container_id=''; die "Invalid container ID returned by creation"; }
-    fi
+    recover_container_id || die "Invalid container ID returned by creation"
+    creating=0
     ((pending_status == 0)) || exit "$pending_status"
     if ((create_status == 0)); then
         [[ -n "$container_id" ]] || die "Creation succeeded without a container ID"
