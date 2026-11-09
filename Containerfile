@@ -1,4 +1,9 @@
-FROM docker.io/library/node:22-bookworm-slim
+# Image inputs are pinned. Update them only through the maintenance procedure in
+# README.md ("Updating pinned image inputs") and record the result in docs/validation.md.
+FROM docker.io/library/node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
+
+ARG CODEX_VERSION=0.167.0
+ARG OPENSPEC_VERSION=1.16.0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     CODEX_HOME=/codex-home/.codex \
@@ -32,8 +37,8 @@ RUN apt-get update \
         xz-utils \
         zip \
     && npm install --global --omit=dev \
-        @fission-ai/openspec@latest \
-        @openai/codex \
+        "@fission-ai/openspec@${OPENSPEC_VERSION}" \
+        "@openai/codex@${CODEX_VERSION}" \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /root/.npm \
     && mkdir -p /codex-home \

@@ -66,6 +66,17 @@ elif args[0] == 'create':
             while True: time.sleep(0.01)
         while not barrier.with_suffix('.release').exists(): time.sleep(0.01)
     print(cid)
+elif args[0] == 'inspect':
+    if 'FAKE_AGENT_BUDGETS' in os.environ:
+        print(os.environ['FAKE_AGENT_BUDGETS'])
+    else:
+        calls = [json.loads(line) for line in pathlib.Path(os.environ['FAKE_LOG']).read_text().splitlines()]
+        create = [c for c in calls if c[0] == 'create'][-1]
+        value = lambda prefix: next(a[len(prefix):] for a in create if a.startswith(prefix))
+        whole, _, frac = value('--cpus=').partition('.')
+        nano = int(whole) * 10**9 + int((frac + '000')[:3]) * 10**6
+        print(value('--memory='), nano, value('--pids-limit='))
+    sys.exit(int(os.environ.get('FAKE_INSPECT_STATUS', '0')))
 elif args[0] in ('kill', 'rm'):
     if os.environ.get('FAKE_CONTROL_STALL') == args[0]:
         if os.environ.get('FAKE_CONTROL_IGNORE_TERM'):
@@ -327,7 +338,9 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(self.creates(), [])
 
     def test_root_prefix_and_numeric_upper_bound(self):
-        result = subprocess.run(['bash', str(WRAPPER)], cwd='/', env=self.env,
+        # The root workspace is refused by default; the exact override keeps this prefix check reachable.
+        result = subprocess.run(['bash', str(WRAPPER)], cwd='/',
+                                env=self.env | {'CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE': '1'},
                                 text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('codex-container-0', self.run_args())
@@ -772,6 +785,8 @@ reap_client
                 self.assertIn('--read-only', args)
                 self.assertNotIn('--privileged', args)
                 self.assertNotIn('--security-opt', args)
+                self.assertEqual([a for a in args if a.startswith('--security-opt')],
+                                 ['--security-opt=no-new-privileges'])
         result = self.run_wrapper('--container-shell', 'ignored', CODEX_YOLO='1')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn('--yolo', self.run_args())
@@ -794,6 +809,145 @@ reap_client
         result = self.run_wrapper('--container-git-worktree')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f'{alias.resolve().parent}:{alias.resolve().parent}:rw', self.run_args())
+
+    # Session hardening baseline (B01-B05), same rules as claude-container.
+    BUDGET_REJECTIONS = {
+        'CODEX_CONTAINER_MEMORY_LIMIT': ['', ' ', '0g', '-1g', 'max', '4', '4gb', '4t', '1.5g', '04g',
+                                         '99999999999g', '1048577g'],
+        'CODEX_CONTAINER_CPU_LIMIT': ['', ' ', '0', '0.000', '-1', 'max', '1.5555', '1025', '.5', '1e3', '2 '],
+        'CODEX_CONTAINER_PIDS_LIMIT': ['', ' ', '0', '-1', 'max', '4194305', '01', '1.5', 'x'],
+        'CODEX_CONTAINER_RUN_TIMEOUT': [' ', '-1', '1.5', 'x', '01', '2147483648', '10s'],
+    }
+
+    def option(self, args, prefix):
+        return next(a[len(prefix):] for a in args if a.startswith(prefix))
+
+    def test_hardening_and_default_budgets_in_every_mode(self):
+        modes = [([], {}), (['--container-shell'], {}), ([], {'CODEX_YOLO': '1'}),
+                 ([], {'CODEX_CONTAINER_PODMAN': '1', 'CODEX_CONTAINER_PODMAN_SOCKET': str(self.sock_path)})]
+        for flags, env in modes:
+            with self.subTest(flags=flags, env=env):
+                result = self.run_wrapper(*flags, **env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = self.run_args()
+                self.assertIn('--cap-drop=all', args)
+                self.assertIn('--security-opt=no-new-privileges', args)
+                self.assertNotIn('--cap-add', ' '.join(args))
+                self.assertEqual(self.option(args, '--memory='), str(4 << 30))
+                self.assertEqual(self.option(args, '--cpus='), '2')
+                self.assertEqual(self.option(args, '--pids-limit='), '512')
+                self.assertNotIn('--timeout', args)
+                calls = [c[0] for c in self.calls()]
+                self.assertLess(calls.index('inspect'), calls.index('start'))
+
+    def test_budget_overrides(self):
+        for memory, cpus, pids, expected in (('8g', '1.5', '1024', 8 << 30), ('512M', '0.25', '1', 512 << 20),
+                                             ('4096k', '1024', '4194304', 4 << 20)):
+            with self.subTest(memory=memory):
+                result = self.run_wrapper(CODEX_CONTAINER_MEMORY_LIMIT=memory, CODEX_CONTAINER_CPU_LIMIT=cpus,
+                                          CODEX_CONTAINER_PIDS_LIMIT=pids)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = self.run_args()
+                self.assertEqual(self.option(args, '--memory='), str(expected))
+                self.assertEqual(self.option(args, '--cpus='), cpus)
+                self.assertEqual(self.option(args, '--pids-limit='), pids)
+
+    def test_invalid_budgets_and_lifetime_rejected_before_engine(self):
+        for name, values in self.BUDGET_REJECTIONS.items():
+            for value in values:
+                with self.subTest(name=name, value=value):
+                    result = self.run_wrapper(**{name: value})
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn(name, result.stderr)
+                    self.assertEqual(self.calls(), [])
+                    self.assertFalse(self.state.exists())
+
+    def test_budget_mismatch_and_inspection_failure_stop_before_start(self):
+        for env in ({'FAKE_AGENT_BUDGETS': '0 2000000000 512'}, {'FAKE_AGENT_BUDGETS': f'{4 << 30} 2000000000 2048'},
+                    {'FAKE_AGENT_BUDGETS': f'{4 << 30} 0 512'}, {'FAKE_INSPECT_STATUS': '125'}):
+            with self.subTest(env=env):
+                result = self.run_wrapper(**env)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('codex-container:', result.stderr)
+                if 'FAKE_AGENT_BUDGETS' in env:
+                    self.assertIn('cgroup v2', result.stderr)
+                calls = self.calls()
+                self.assertFalse(any(c[0] == 'start' for c in calls))
+                self.assertIn(['rm', '--force', '--ignore', '--time', '0', 'a' * 64], calls)
+
+    def test_lifetime_argument_and_notice(self):
+        for value in ('', '0'):
+            result = self.run_wrapper(CODEX_CONTAINER_RUN_TIMEOUT=value)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn('--timeout', self.run_args())
+        result = self.run_wrapper(CODEX_CONTAINER_RUN_TIMEOUT='3600')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.run_args()
+        self.assertEqual(args[args.index('--timeout') + 1], '3600')
+        self.assertNotIn('lifetime', result.stderr)
+        script = self.bin / 'podman'
+        script.write_text(script.read_text().replace("elif args[0] in ('run', 'start'):",
+                                                     "elif args[0] in ('run', 'start') and os.environ.get('FAKE_SLOW'):\n"
+                                                     "    time.sleep(1.2); sys.exit(255)\nelif args[0] in ('run', 'start'):"))
+        result = self.run_wrapper(CODEX_CONTAINER_RUN_TIMEOUT='1', FAKE_SLOW='1')
+        self.assertEqual(result.returncode, 255, result.stderr)
+        self.assertIn('session lifetime limit reached (1 s); exit status 255', result.stderr)
+        result = self.run_wrapper(CODEX_CONTAINER_RUN_TIMEOUT='1', FAKE_EXIT='3')
+        self.assertEqual(result.returncode, 3)
+        self.assertNotIn('lifetime', result.stderr)
+
+    def assert_refused(self, result, path):
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f'refusing sensitive workspace {path}', result.stderr)
+        self.assertIn('CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1', result.stderr)
+        self.assertEqual(self.calls(), [])
+        self.assertFalse(self.state.exists())
+
+    def test_sensitive_workspaces_refused_before_engine(self):
+        home = self.base / 'home-link'
+        home.symlink_to(self.project, target_is_directory=True)
+        self.assert_refused(self.run_wrapper(HOME=str(home)), self.project)
+        self.assert_refused(self.run_wrapper('--container-git-worktree', HOME=str(self.project.parent)),
+                            self.project.parent)
+        etc = self.base / 'etc-link'
+        etc.symlink_to('/etc', target_is_directory=True)
+        for cwd, path in ((etc, '/etc'), (Path('/'), '/'), (Path('/tmp'), '/tmp'), (Path('/usr'), '/usr')):
+            with self.subTest(cwd=cwd):
+                self.project = cwd
+                self.assert_refused(self.run_wrapper(), path)
+
+    def test_wsl_drive_roots(self):
+        drive = Path('/mnt/d')
+        if not drive.is_dir():
+            self.skipTest('no /mnt/d drive root on this host')
+        self.project = drive
+        self.assert_refused(self.run_wrapper(), '/mnt/d')
+        project = Path(os.environ.get('CODEX_WRAPPER_DRIVE_PROJECT', ROOT))
+        if not str(project.resolve()).startswith('/mnt/d/'):
+            self.skipTest('no project below /mnt/d')
+        self.project = project
+        result = self.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unsafe_workspace_override_is_exact(self):
+        for value in ('true', 'yes', '01', '1 '):
+            with self.subTest(value=value):
+                self.assert_refused(self.run_wrapper(HOME=str(self.project),
+                                                     CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE=value), self.project)
+        result = self.run_wrapper(HOME=str(self.project), CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f'WARNING: sensitive workspace explicitly exposed read/write: {self.project}', result.stderr)
+        self.assertIn(f'{self.project}:{self.project}:rw', self.run_args())
+
+    def test_help_documents_hardening(self):
+        result = self.run_wrapper('--container-help')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for text in ('CODEX_CONTAINER_MEMORY_LIMIT', '(default: 4g)', 'CODEX_CONTAINER_CPU_LIMIT', '(default: 2)',
+                     'CODEX_CONTAINER_PIDS_LIMIT', '(default: 512)', 'CODEX_CONTAINER_RUN_TIMEOUT',
+                     'disabled by default', 'CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE', 'drops all capabilities',
+                     'do not limit workspace', '/mnt/<letter>'):
+            self.assertIn(text, result.stdout)
+        self.assertEqual(self.calls(), [])
 
 
 if __name__ == '__main__':

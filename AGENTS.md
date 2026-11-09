@@ -114,7 +114,7 @@ check image build, Codex startup, isolated `CODEX_HOME` persistence, local Git
 worktrees, and child-container bind mounts. Use disposable local repositories
 and configuration; record unavailable checks separately from mock results.
 Standard-library Python tests live in `tests/`. Run wrapper checks with
-`python3 -B -m unittest discover -s tests -p test_wrapper.py -v`. Real runtime
+`python3 -B -m unittest discover -s tests -p test_wrapper.py -v` and `test_image_pins.py`. Real runtime
 checks require opt-in via `CODEX_RUNTIME_TESTS=1`, a built image, a same-host
 rootless service, and private host-visible `CODEX_TEST_ROOT`, or use
 `bash tests/run-runtime.sh` for disposable native Linux volume storage. Use a
@@ -143,6 +143,12 @@ permits new host mounts outside the workspace with the service user's authority;
 rootless operation does not retain project-only access. YOLO and delegation
 are independent; disabled YOLO does not override native flags or settings. Never embed
 credentials or add `--privileged`. Preserve absolute workspace paths for child
-bind mounts. Parent mounting is opt-in and exposes all contents read/write,
-potentially including the home directory or `/`; do not broaden mounts beyond
-that documented behavior.
+bind mounts. Parent mounting is opt-in and exposes all contents read/write;
+sensitive roots (`/`, system directories, `/tmp`, the physical home and
+`/mnt/<letter>`) are refused unless exactly `CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1`.
+Do not broaden mounts beyond that documented behavior. Every session drops all
+capabilities, sets no-new-privileges and has validated, inspected memory, CPU
+and process budgets (`CODEX_CONTAINER_MEMORY_LIMIT`/`CPU_LIMIT`/`PIDS_LIMIT`,
+defaults 4g/2/512) plus an optional `CODEX_CONTAINER_RUN_TIMEOUT`; never add
+capabilities back or weaken a budget to fix a tool. Image inputs are pinned in
+`Containerfile` and change only through the README update procedure.
