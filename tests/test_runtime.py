@@ -96,7 +96,8 @@ class RuntimeTests(unittest.TestCase):
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith('CODEX_') and k != 'CONTAINER_CONNECTION'}
         self.env.update(CODEX_HOME=str(self.state), CODEX_CONTAINER_IMAGE=IMAGE,
-                        CODEX_CONTAINER_PODMAN='0', CODEX_YOLO='0')
+                        CODEX_CONTAINER_PODMAN='0', CODEX_YOLO='0',
+                        CODEX_CONTAINER_NETWORK='unrestricted', CODEX_CONTAINER_MAINTENANCE='1')
         self.socket = os.environ.get('CODEX_CONTAINER_PODMAN_SOCKET', '')
         if not self.socket:
             connection = self.env.get('CONTAINER_HOST', '')
@@ -278,14 +279,19 @@ PYTHON
         shutil.copyfile(ROOT / '.containerignore', context / '.containerignore')
         for relative in ('.git/config', '.codex/auth.json', '.env', 'nested/credentials',
                          'nested/cache/sentinel', '.test-state/sentinel', 'docs/sentinel',
-                         'tests/sentinel', 'unknown-file', 'nested/Containerfile'):
+                         'tests/sentinel', 'unknown-file', 'nested/Containerfile',
+                         'network/bin/sandbox-egress-guard', 'network/policy.py', 'network/sentinel',
+                         'agent/profile.json'):
             path = context / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('DUMMY-NOT-A-CREDENTIAL')
+        for name in ('relay.py', 'mux.py'):
+            (context / 'network' / name).write_text('# relay input')
+        # Only the image recipe, the ignore file and the two relay inputs pass.
         (context / 'Containerfile').write_text(
             'FROM ' + IMAGE + '\nCOPY . /context\n'
-            'RUN test -f /context/Containerfile && '
-            'test "$(find /context -mindepth 1 ! -name Containerfile | wc -l)" = 0\n')
+            'RUN cd /context && test "$(find . -mindepth 1 -type f | sort | tr \'\\n\' \' \')" = '
+            '"./.containerignore ./Containerfile ./network/mux.py ./network/relay.py "\n')
         iidfile = self.base / 'test-image-id'
         def remove_image():
             if iidfile.exists():
@@ -370,6 +376,7 @@ PYTHON
                    '--env', 'CODEX_HOME=' + str(self.state),
                    '--env', 'CODEX_CONTAINER_IMAGE=' + IMAGE,
                    '--env', 'CODEX_CONTAINER_PODMAN=1',
+                   '--env', 'CODEX_CONTAINER_NETWORK=unrestricted',
                    '--entrypoint', '/bin/bash', IMAGE, str(WRAPPER), '--container-shell']
         self.assert_success(terminal_shell(command,
             'test -S /run/podman/podman.sock\npodman info >/dev/null\nprintf nested > nested-file',

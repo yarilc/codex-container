@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "name": "codex-container",
+  "display_name": "Codex",
+  "wrapper": "codex-container.sh",
+  "env_prefix": "CODEX_CONTAINER",
+  "label_namespace": "io.codex-container",
+  "identifiers": ["codex", "openai"],
+  "images": {
+    "agent": "localhost/codex-cli",
+    "proxy": "localhost/codex-egress",
+    "toolchain": "localhost/codex-guard-toolchain"
+  },
+  "install": {
+    "state_name": "codex-egress"
+  },
+  "native": {
+    "home": "/codex-home",
+    "command": "codex",
+    "config_dir_env": "CODEX_HOME",
+    "approval_bypass_env": "CODEX_YOLO",
+    "config_home": ".codex",
+    "shared_dirs": []
+  },
+  "auth": {
+    "account": {
+      "description": "reuses ChatGPT account sign-in with device code login",
+      "policy_profile": "openai-account",
+      "hosts": ["auth.openai.com", "chatgpt.com"],
+      "login_args": ["login", "--device-auth"]
+    },
+    "api": {
+      "description": "uses an API key supplied at launch",
+      "policy_profile": "openai-api",
+      "hosts": ["api.openai.com"],
+      "credential_env": "OPENAI_API_KEY"
+    }
+  }
+}

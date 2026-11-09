@@ -44,5 +44,9 @@ RUN apt-get update \
     && mkdir -p /codex-home \
     && chmod 1777 /codex-home
 
+# Agent-side relay for restricted sessions; the guard is mounted from the
+# protected installation at launch, never baked into this image.
+COPY network/relay.py network/mux.py /opt/sandbox-egress/
+
 WORKDIR /workspace
 ENTRYPOINT ["codex"]

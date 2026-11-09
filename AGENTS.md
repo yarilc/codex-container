@@ -10,16 +10,42 @@
   holds active proposals and dated archives.
 - `tests/` contains synthetic wrapper tests and opted-in real Podman checks.
 - `docs/validation.md` records verification results and environment limitations.
+- `docs/network-contract.md` records the network mode contract, the shared
+  reference and the intentional per-agent differences.
+- `agent/profile.json` is the single source of Codex-specific values used by
+  shared code; `agent/policies/default.json` holds the OpenAI provider profiles.
+- `network/` holds the shared restricted-session implementation (guard, proxy,
+  relay, policy, platform checks, qualification and the `session.py` helper);
+  `setup/diagnostics.py` is the shared diagnostics filter.
+
+## Shared and agent-specific files
+
+`network/`, `setup/diagnostics.py` and the shared tests (`sandbox_profile.py`,
+`test_agent_profile.py`, `test_network_policy.py`, `test_mux.py`,
+`test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`,
+`test_qualification.py`, `test_guard.py`, `test_session.py`,
+`test_network_feasibility.py` and their fixtures) are copied unchanged from
+`claude-container` at tag `sandbox-ref-2`. Never edit them here and never add
+an agent identifier (`codex`, `openai`) to them: fix a defect in
+`claude-container` first, then copy the files again and update the manifest in
+`tests/test_reference_copy.py`. Codex values come only from `agent/`, the
+wrapper, `Containerfile`, `.containerignore` and the per-agent tests
+(`test_wrapper.py`, `test_runtime.py`, `test_network_runtime.py`,
+`network_tls_fixture.py`, `test_image_pins.py`, `test_reference_copy.py`,
+`run-runtime.sh`). The wrapper calls `network/session.py` (`prepare`, `start`,
+`agent-args`, `stop`) and never re-implements the restricted lifecycle inline.
 
 ## Build, Test, and Development Commands
 
 Run from the repository root:
 
 ```bash
-./codex-container.sh --container-build  # Build image, then start Codex
+export CODEX_CONTAINER_NETWORK=unrestricted   # or offline/provider; always explicit
+CODEX_CONTAINER_MAINTENANCE=1 ./codex-container.sh --container-build  # Build, then start
 ./codex-container.sh                    # Start in the current workspace
 ./codex-container.sh --container-shell # Open Bash in the runtime image
 ./codex-container.sh --container-help  # Show wrapper options
+CODEX_CONTAINER_NETWORK=offline ./codex-container.sh --container-qualify  # Restricted gate
 bash -n codex-container.sh              # Check Bash syntax
 git diff --check                       # Check whitespace
 openspec validate --specs --strict      # Validate main specifications
@@ -96,6 +122,20 @@ other inspection errors stop startup. The default-deny `.containerignore`
 permits only the root Containerfile as an application input; future local
 COPY/ADD sources need deliberate inclusion.
 
+Every launch requires a nonempty `CODEX_CONTAINER_NETWORK`; an unset or empty
+mode stops before engine queries or state creation. Every image build,
+including the automatic build of a missing image, requires the exact
+`CODEX_CONTAINER_MAINTENANCE=1`. `offline` and `provider` reject
+`CODEX_CONTAINER_PODMAN=1`, require host Python 3, a same-host Unix rootless
+Netavark service with Podman >= 4.9, Landlock ABI >= 3, a protected
+installation with the guard in `network/bin`, and a current qualification
+report; they run the image by its immutable ID and never fall back to
+unrestricted networking. Provider sessions add protected `-c` overrides for
+optional traffic before the user's arguments and forward `OPENAI_API_KEY` only
+for the exact `openai-api` profile. `CODEX_CONTAINER_STATE_DIR` selects an
+isolated `/codex-home` and conflicts with a nonempty `CODEX_HOME`; host CA
+trust is opt-in and mounts one bundle read-only at `/codex-home/ca/bundle.pem`.
+
 ## Coding Style & Naming Conventions
 
 Use Bash with `set -Eeuo pipefail`, quoted variables, and command arrays for
@@ -113,6 +153,13 @@ default/parent mounts, spaces, symlinks, and shell mode. With usable Podman,
 check image build, Codex startup, isolated `CODEX_HOME` persistence, local Git
 worktrees, and child-container bind mounts. Use disposable local repositories
 and configuration; record unavailable checks separately from mock results.
+Run `bash tests/run-runtime.sh --wrapper` for the wrapper suite in a runner
+container (the agent sandbox mounts `/tmp` noexec and cannot bind Unix sockets
+on its workspace), `--shared` for the copied shared suites and
+`tests/test_reference_copy.py`, and `--network-policy`, `--mux`,
+`--network-feasibility`, `--qualification`, `--guard` and `--network` for the
+real rootless acceptance modes. `--guard` and `--network` need the toolchain
+image `localhost/codex-guard-toolchain:development`; see `network/README.md`.
 Standard-library Python tests live in `tests/`. Run wrapper checks with
 `python3 -B -m unittest discover -s tests -p test_wrapper.py -v` and `test_image_pins.py`. Real runtime
 checks require opt-in via `CODEX_RUNTIME_TESTS=1`, a built image, a same-host
