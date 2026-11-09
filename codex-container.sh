@@ -58,11 +58,28 @@ Environment:
   CODEX_YOLO             enable Codex --yolo (default: disabled)
                          1/true/yes enable; empty/0/false/no disable
                          words are case-insensitive; other values are errors
+  CODEX_CONTAINER_MEMORY_LIMIT session memory, integer with k/m/g unit (default: 4g)
+  CODEX_CONTAINER_CPU_LIMIT    session CPUs, up to 3 decimals (default: 2)
+  CODEX_CONTAINER_PIDS_LIMIT   session process limit (default: 512)
+                         Budgets cannot be disabled; they require delegated
+                         rootless cgroup v2 cpu/memory/pids controllers
+  CODEX_CONTAINER_RUN_TIMEOUT  session container lifetime in whole seconds
+                         (default: 0, disabled by default)
+  CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE exact 1 permits a refused sensitive
+                         workspace with a warning (default: disabled)
 
 Socket access permits new host mounts beyond the workspace with the service
 user's authority. YOLO and socket access are independent. The service reports
 the host-side socket source; containerized callers must preserve host absolute
-workspace and state paths. No privileges or security-policy overrides are added.
+workspace and state paths. Every session drops all capabilities and sets
+no-new-privileges; no security-policy overrides are added. Budgets and tmpfs
+sizes do not limit workspace or CODEX_HOME storage growth.
+The writable workspace (or worktree parent) must not physically be /, /home,
+/root, /etc, /usr, /var, /bin, /sbin, /lib, /lib64, /boot, /opt, /srv, /mnt,
+/media, /proc, /sys, /dev, /run, /tmp, the caller's home or a /mnt/<letter>
+drive root; descendants such as /mnt/d/project are allowed.
+When the lifetime limit stops a session, a notice is printed and the engine
+client's exit status is returned.
 EOF
 }
 
@@ -86,9 +103,55 @@ while (($#)); do
     esac
 done
 
+# Session budgets and lifetime, validated before any engine or state operation.
+# Same rules and messages as the claude-container reference (sandbox-ref-2).
+# Only an unset budget selects its default; no value disables a budget.
+memory_text=${CODEX_CONTAINER_MEMORY_LIMIT-4g}
+cpu_text=${CODEX_CONTAINER_CPU_LIMIT-2}
+pids_text=${CODEX_CONTAINER_PIDS_LIMIT-512}
+timeout_text=${CODEX_CONTAINER_RUN_TIMEOUT:-0}
+memory_bytes=0
+if [[ "$memory_text" =~ ^([1-9][0-9]{0,15})([kmgKMG])$ ]]; then
+    case "${BASH_REMATCH[2],,}" in
+        k) unit=1024 ;;
+        m) unit=1048576 ;;
+        *) unit=1073741824 ;;
+    esac
+    ((10#${BASH_REMATCH[1]} > (1 << 50) / unit)) || memory_bytes=$((10#${BASH_REMATCH[1]} * unit))
+fi
+((memory_bytes > 0)) || die 'CODEX_CONTAINER_MEMORY_LIMIT must be a positive integer with unit k, m or g, for example 4g'
+cpu_nano=0
+if [[ "$cpu_text" =~ ^([0-9]{1,4})(\.([0-9]{1,3}))?$ ]]; then
+    fraction=${BASH_REMATCH[3]}000
+    cpu_nano=$((10#${BASH_REMATCH[1]} * 1000000000 + 10#${fraction:0:3} * 1000000))
+    ((cpu_nano <= 1024000000000)) || cpu_nano=0
+fi
+((cpu_nano > 0)) || die 'CODEX_CONTAINER_CPU_LIMIT must be a positive number of CPUs with at most 3 decimals, for example 2 or 1.5'
+[[ "$pids_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((pids_text > 0 && pids_text <= 4194304)) \
+    || die 'CODEX_CONTAINER_PIDS_LIMIT must be a positive integer process count up to 4194304'
+[[ "$timeout_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((timeout_text <= 2147483647)) \
+    || die 'CODEX_CONTAINER_RUN_TIMEOUT must be whole seconds; 0 disables the lifetime limit'
+pids_limit=$((10#$pids_text))
+run_timeout=$((10#$timeout_text))
+
+# Refuse sensitive writable workspaces before any engine or state operation.
 workspace_mount="$WORKSPACE"
 if ((git_worktree)); then
     workspace_mount="$(dirname -- "$WORKSPACE")"
+fi
+[[ "${HOME:-}" == /* ]] || die 'HOME must be an absolute path'
+# A missing home cannot be a workspace, so its lexical path is sufficient then.
+physical_home=$(cd -- "$HOME" 2>/dev/null && pwd -P) || physical_home=$HOME
+unsafe_workspace=0
+case "$workspace_mount" in
+    /|/home|/root|/etc|/usr|/var|/bin|/sbin|/lib|/lib64|/boot|/opt|/srv|/mnt|/media|/proc|/sys|/dev|/run|/tmp)
+        unsafe_workspace=1 ;;
+esac
+[[ "$workspace_mount" != "$physical_home" && ! "$workspace_mount" =~ ^/mnt/[A-Za-z]$ ]] || unsafe_workspace=1
+if ((unsafe_workspace)); then
+    [[ "${CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE:-}" == 1 ]] \
+        || die "refusing sensitive workspace $workspace_mount; launch from a project subdirectory or set exact CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1"
+    printf 'codex-container: WARNING: sensitive workspace explicitly exposed read/write: %s\n' "$workspace_mount" >&2
 fi
 
 command -v podman >/dev/null || die "podman is not installed on the host"
@@ -191,12 +254,15 @@ podman_args=(
     --tmpfs /codex-home:rw,exec,nosuid,nodev,mode=1777
     --userns=keep-id
     --user "$(id -u):$(id -g)"
+    --cap-drop=all --security-opt=no-new-privileges
+    "--memory=$memory_bytes" "--cpus=$cpu_text" "--pids-limit=$pids_limit"
     --workdir "$WORKSPACE"
     --env HOME=/codex-home
     --env CODEX_HOME=/codex-home/.codex
     --volume "$workspace_mount:$workspace_mount:rw"
     --volume "$CODEX_DIR:/codex-home/.codex:rw"
 )
+((run_timeout == 0)) || podman_args+=(--timeout "$run_timeout")
 if [[ -t 0 && -t 1 ]]; then
     podman_args+=(--tty)
 fi
@@ -373,8 +439,18 @@ done
 [[ -n "$container_id" ]] || die "Cannot reserve a container name after 20 attempts"
 ((pending_status == 0)) || exit "$pending_status"
 
+# Engine flags alone are not evidence: require the created configuration to
+# carry every selected budget before the application starts.
+configured_budgets=$(timeout --kill-after=1s 10s podman inspect --type container \
+    --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' "$container_id") \
+    || die 'Cannot inspect session resource budgets; session not started'
+((pending_status == 0)) || exit "$pending_status"
+[[ "$configured_budgets" == "$memory_bytes $cpu_nano $pids_limit" ]] \
+    || die "Session resource budgets were not applied (expected memory=$memory_bytes nano_cpus=$cpu_nano pids=$pids_limit); check rootless cgroup v2 cpu/memory/pids controller delegation; session not started"
+
 # Explicit redirection retains redirected stdin for the background client.
 attached=1
+started_at=$SECONDS
 podman start --attach --interactive --sig-proxy=false "$container_id" <&0 &
 client_pid=$!
 if ((pending_status)); then
@@ -384,4 +460,7 @@ status=0
 wait "$client_pid" || status=$?
 ((pending_status == 0)) || exit "$pending_status"
 client_pid=''
+if ((run_timeout > 0 && status != 0 && SECONDS - started_at >= run_timeout)); then
+    printf 'codex-container: session lifetime limit reached (%s s); exit status %s\n' "$run_timeout" "$status" >&2
+fi
 exit "$status"

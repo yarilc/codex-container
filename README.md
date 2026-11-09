@@ -407,11 +407,51 @@ configured endpoints or sockets exposed through workspace files. The wrapper
 does not use `--privileged` and does not install SSH clients or remote
 repository configuration.
 
-With `--container-git-worktree`, the selected parent can be your home directory
-or `/`, exposing all files beneath it read/write. Use the flag from a directory
-whose parent you intend to expose. Writable binds take precedence over image
-paths they cover; mounting `/` can mask the image root, so the read-only image
-policy does not make such host files immutable.
+With `--container-git-worktree`, the selected parent is exposed read/write with
+all files beneath it. Use the flag from a directory whose parent you intend to
+expose. Sensitive roots are refused (see below); writable binds take precedence
+over image paths they cover, so an explicitly allowed `/` would mask the image
+root and the read-only image policy would not make such host files immutable.
+
+### Session hardening, budgets and lifetime
+
+Every Codex and shell session, with or without Podman delegation and YOLO, runs
+with `--cap-drop=all` and `--security-opt=no-new-privileges`. The container has
+no capabilities and cannot gain privileges through set-user-ID programs. Codex's
+own Linux command sandbox, Bubblewrap, Git, OpenSpec and the delegated Podman
+client work under these settings. The wrapper never adds capabilities back to
+work around a tool; such a limitation is documented in `docs/validation.md`.
+Delegation still grants host engine authority beyond these limits.
+
+Every session has explicit resource budgets:
+
+| Variable | Default | Accepted values |
+| --- | --- | --- |
+| `CODEX_CONTAINER_MEMORY_LIMIT` | `4g` | positive integer with unit `k`, `m` or `g` |
+| `CODEX_CONTAINER_CPU_LIMIT` | `2` | positive number of CPUs, at most 3 decimals, up to 1024 |
+| `CODEX_CONTAINER_PIDS_LIMIT` | `512` | integer from 1 to 4194304 |
+
+Only an unset variable selects the default; no value disables a budget, and an
+invalid value stops the wrapper before any engine query. After creating the
+container, the wrapper checks that the engine applied every budget and stops
+before Codex starts otherwise. Budgets need delegated rootless cgroup v2 `cpu`,
+`memory` and `pids` controllers. Budgets and tmpfs sizes do not limit workspace
+or `CODEX_HOME` storage growth.
+
+`CODEX_CONTAINER_RUN_TIMEOUT` optionally sets the session container lifetime in
+whole seconds; unset, empty or `0` disables it (the default). When the engine
+stops a session at the limit, the wrapper prints
+`codex-container: session lifetime limit reached (N s); exit status S` and
+returns the Podman client status (255 on the measured Podman 4.9.3).
+
+The writable workspace, or the `--container-git-worktree` parent, is refused
+when its physical path is `/`, `/home`, `/root`, `/etc`, `/usr`, `/var`, `/bin`,
+`/sbin`, `/lib`, `/lib64`, `/boot`, `/opt`, `/srv`, `/mnt`, `/media`, `/proc`,
+`/sys`, `/dev`, `/run`, `/tmp`, your physical home directory, or a WSL drive
+root such as `/mnt/d`. Subdirectories such as `/mnt/d/Workspace/project` are
+allowed. Launch from a project directory, or set exactly
+`CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` to expose a refused directory
+deliberately; the wrapper then prints a warning.
 
 ## Included Tools
 
@@ -422,12 +462,30 @@ archive tools (`tar`, `gzip`, `bzip2`, `xz`, `zip`, `unzip`), JSON support
 (`jq`), HTTP/TLS support (`curl`, CA certificates), diagnostics (`procps`,
 `util-linux`, `file`, `less`), and standard POSIX utilities.
 
+Image inputs are pinned in `Containerfile`: the `node:22-bookworm-slim` base by
+digest, Codex CLI by `CODEX_VERSION` and OpenSpec by `OPENSPEC_VERSION`.
+`tests/test_image_pins.py` rejects floating tags, `@latest` and version ranges.
+Codex cannot update itself inside a session because the image root is read-only.
+
+### Updating pinned image inputs
+
+1. Change `CODEX_VERSION`, `OPENSPEC_VERSION` or the base digest in
+   `Containerfile`; resolve a new digest with
+   `podman pull docker.io/library/node:22-bookworm-slim` and
+   `podman image inspect --format '{{.Digest}}'`.
+2. Rebuild explicitly with `./codex-container.sh --container-build`.
+3. Check `codex --version` and `openspec --version` in the image, then rerun the
+   credential-free suites and `bash tests/run-runtime.sh`.
+4. Record the tested versions, digest and results with the date in
+   `docs/validation.md`.
+
 ## Verification
 
 Run credential-free wrapper tests using standard-library Python:
 
 ```bash
 python3 -B -m unittest discover -s tests -p test_wrapper.py -v
+python3 -B -m unittest discover -s tests -p test_image_pins.py -v
 bash -n codex-container.sh tests/run-runtime.sh
 git diff --check
 openspec validate --specs --strict
@@ -462,5 +520,8 @@ retain their host absolute paths when using a containerized caller.
 Checks cover real mount boundaries, identity, persistent state, all ephemeral
 locations, tmpfs capacities and execution, concurrent naming, signals and owned
 cleanup, exit 125, build-context exclusion, linked Git worktrees, child binds,
-and a caller with a remapped Unix service socket. Exact results and unavailable checks are recorded in
+a caller with a remapped Unix service socket, zero capabilities and
+no-new-privileges, effective cgroup v2 budgets and process-limit enforcement,
+Codex's own sandbox, Bubblewrap and delegated children without capabilities,
+the lifetime limit and the refused home workspace. Exact results and unavailable checks are recorded in
 [docs/validation.md](docs/validation.md).

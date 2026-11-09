@@ -316,3 +316,38 @@ The OpenSpec capabilities were renamed to the scheme shared by the five wrappers
 | `runtime-filesystem` | `container-isolation` |
 
 `openspec validate --specs` passed: 5 specs, 0 failures.
+
+## Session hardening baseline (B01–B05): 2026-11-09
+
+Change `harden-session-baseline` (Wave 2), ported from the `claude-container`
+reference at tag `sandbox-ref-2`. Host: WSL2 x86_64, kernel
+6.6.87.2-microsoft-standard-WSL2, rootless Podman 4.9.3 with cgroup v2. No
+credentials or model requests were used.
+
+Pre-change baseline with image `4a7d79663415` (Codex CLI 0.167.0, OpenSpec
+1.16.0, unpinned): capability sets 0 except bounding `00000000800405fb`,
+`NoNewPrivs` 0, `memory.max` `max`, `pids.max` 2048 (engine default),
+`cpu.max` `max 100000`. Git, Bubblewrap, Codex's own Linux sandbox and the
+delegated Podman client (rootless `podman info` and a child container) worked.
+
+After the change, image `9f6940596ca5` built from the pinned recipe: base
+`docker.io/library/node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da`
+(the same digest as `sandbox-ref-2`), `codex --version` `codex-cli 0.167.0`,
+`openspec --version` `1.16.0`.
+
+| Check | Result |
+| --- | --- |
+| `tests/test_wrapper.py` | Initial run in a runner container: 13 failures. 12 came from an assertion expecting `--security-opt` as a separate argument; 1 from the existing root-prefix test, which launched from `/` and is now refused. The assertion was corrected and the prefix test sets the exact override. Rerun: passed, 52 tests |
+| `tests/test_image_pins.py` | Passed: 2 tests, including mutated recipes (tag-only base, `@latest`, unversioned package, version range, missing package) |
+| `bash tests/run-runtime.sh` | Passed on the first run: 14 tests |
+| Effective hardening | All capability sets 0, `NoNewPrivs` 1, private cgroup namespace; `memory.max`, `pids.max` and `cpu.max` matched 4 GiB/512/2 CPUs and 1536 MiB/256/1.5 CPUs, with and without delegation; 80 children with a 32-process budget failed as expected |
+| Tools under hardening | Codex's own Linux sandbox ran a command and denied a workspace write under its default read-only policy; Bubblewrap, Git, OpenSpec and a delegated child container worked. No capability was added |
+| Lifetime | `CODEX_CONTAINER_RUN_TIMEOUT=3` stopped `sleep 60`; the client returned 255, the notice was printed and the owned container was removed. An early `exit 7` returned 7 without a notice |
+| Refused workspace | A launch with the workspace equal to `HOME` exited 1 before any engine operation |
+| `bash -n`, `git diff --check`, `openspec validate harden-session-baseline --strict` | Passed |
+
+The unit suites were run in a container on the host (`--tmpfs /tmp:exec`)
+because the agent sandbox mounts `/tmp` `noexec` and its v9fs workspace cannot
+bind Unix sockets; both limitations belong to the test caller, not the wrapper.
+Not covered by this change: Python budget normalization, setup questions and
+qualification binding, which arrive with the Wave 3 network port.
