@@ -2,9 +2,13 @@
 
 `codex-container.sh` runs Codex CLI in a rootless Podman container. The
 image filesystem is read-only, with writable workspace, Codex state, and
-temporary storage. Set `CODEX_CONTAINER_PODMAN=1` to expose the host Podman
-socket and let Codex launch containers for tests and builds. The Podman command
-remains installed in both modes.
+temporary storage. Every launch selects a network mode explicitly:
+`offline`, `provider` (only the OpenAI hosts of one protected profile) or
+`unrestricted` (ordinary networking, the previous behavior); see
+[Network modes](#network-modes). In `unrestricted` mode, set
+`CODEX_CONTAINER_PODMAN=1` to expose the host Podman socket and let Codex launch
+containers for tests and builds. The Podman command remains installed in every
+mode.
 
 ## Enable rootless Podman on the host
 
@@ -175,7 +179,8 @@ repository directory:
 
 ```bash
 chmod +x codex-container.sh
-./codex-container.sh --container-build
+export CODEX_CONTAINER_NETWORK=unrestricted
+CODEX_CONTAINER_MAINTENANCE=1 ./codex-container.sh --container-build
 ./codex-container.sh
 ./codex-container.sh exec --full-auto
 ./codex-container.sh --container-shell
@@ -183,31 +188,44 @@ chmod +x codex-container.sh
 CODEX_YOLO=1 ./codex-container.sh
 ```
 
-Without `--container-build`, image inspection status 0 uses the existing image
-and status 1 builds a missing image. Other inspection errors stop startup;
-check the reported storage or engine error instead of expecting a rebuild.
-`--container-build` explicitly builds the selected image without an existence
-check. A failed build never starts a session.
+Every ordinary launch needs a nonempty `CODEX_CONTAINER_NETWORK`. An unset or
+empty mode stops before any engine call or state creation and names the three
+modes; `unrestricted` keeps the previous networking behavior. Unknown values
+fail before image operations.
 
-The default-deny `.containerignore` includes only the root `Containerfile` as
-an application build input. Git metadata, local configuration, state,
-credentials, caches, tests, documentation, and other files are excluded,
-including nested and newly added files. The builder can still read its ignore
-metadata. Future local `COPY` or `ADD` inputs must be deliberately included in
-`.containerignore`. This policy filters builds; it does not restrict runtime
-workspace mounts.
+Every image build is maintenance: `--container-build` and the automatic build
+of a missing image both require the exact `CODEX_CONTAINER_MAINTENANCE=1`, in
+every mode. Without it the wrapper stops before any build or pull. Image
+inspection status 0 uses the existing image; status 1 builds a missing image
+only under maintenance. Other inspection errors stop startup; check the
+reported storage or engine error instead of expecting a rebuild. A failed
+build never starts a session. Host pulls and build `RUN` steps happen outside
+runtime network filtering.
+
+The default-deny `.containerignore` admits only `Containerfile`,
+`.containerignore` and the two relay inputs `network/relay.py` and
+`network/mux.py`, which the image copies to `/opt/sandbox-egress/`. Git
+metadata, local configuration, state, credentials, the guard binary, policies,
+caches, tests, documentation, and other files are excluded, including nested
+and newly added files. Future local `COPY` or `ADD` inputs must be deliberately
+included in `.containerignore`. This policy filters builds; it does not
+restrict runtime workspace mounts.
 
 To allow access to the host Podman service, complete the optional socket setup
 and verification, then use:
 
 ```bash
-CODEX_CONTAINER_PODMAN=1 ./codex-container.sh
-CODEX_CONTAINER_PODMAN=1 ./codex-container.sh --container-shell
+CODEX_CONTAINER_NETWORK=unrestricted CODEX_CONTAINER_PODMAN=1 ./codex-container.sh
+CODEX_CONTAINER_NETWORK=unrestricted CODEX_CONTAINER_PODMAN=1 ./codex-container.sh --container-shell
 ```
 
-Only the exact value `1` enables this integration. Unset, empty, and all other
-values (including `true`) disable it: the wrapper does not validate or mount
-the API socket and removes `CONTAINER_HOST` from the session environment.
+Delegation is available only with explicit `unrestricted` networking: in
+`offline` and `provider` the wrapper rejects `CODEX_CONTAINER_PODMAN=1` before
+image or resource operations, because the host API bypasses egress
+enforcement. Only the exact value `1` enables this integration. Unset, empty,
+and all other values (including `true`) disable it: the wrapper does not
+validate or mount the API socket and removes `CONTAINER_HOST` from the session
+environment.
 Existing users who launch child containers through the host service must now
 set `CODEX_CONTAINER_PODMAN=1`. Both modes use the same image, and
 `CODEX_CONTAINER_IMAGE` continues to override its name.
@@ -370,6 +388,186 @@ These checks protect access to the selected directory; they do not encrypt
 state or audit all ancestors, ACLs, or existing files. The agent can read and
 write the mounted state. Removing a container does not remove it.
 
+For a fully isolated application home, set `CODEX_CONTAINER_STATE_DIR`
+instead of `CODEX_HOME`:
+
+```bash
+unset CODEX_HOME
+CODEX_CONTAINER_STATE_DIR="$HOME/.local/share/codex-container/isolated" ./codex-container.sh
+```
+
+The directory is mounted read/write at `/codex-home` (with
+`CODEX_HOME=/codex-home/.codex`), so caches and other home data persist with
+it. The shared `~/.codex` is neither mounted nor imported: sign in again
+inside the isolated home. A simultaneous nonempty `CODEX_HOME` is a conflict
+error. The wrapper creates the home and its `.codex` privately, applies the
+same ownership and mode checks to both, never repairs permissions, and rejects
+`.codex` or the CA mount parent if a symbolic link resolves outside the home.
+
+### Host CA trust
+
+Host CA trust is opt-in. `CODEX_CONTAINER_TRUST_HOST_CA` accepts `1`, `true`
+or `yes` (case-insensitive) to enable it, and empty, `0`, `false` or `no` to
+disable it; other values fail before image operations. When enabled, the
+wrapper mounts one bundle file read-only at `/codex-home/ca/bundle.pem` and sets
+`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` and
+`NODE_EXTRA_CA_CERTS` to it. Codex reads `SSL_CERT_FILE` when
+`CODEX_CA_CERTIFICATE` is unset. The bundle is `CODEX_CONTAINER_CA_BUNDLE`, or
+the first existing file among `/etc/ssl/certs/ca-certificates.crt` and
+`/etc/pki/tls/certs/ca-bundle.crt`; a missing file is an error. The host
+certificate directory is never mounted.
+
+## Network modes
+
+| `CODEX_CONTAINER_NETWORK` | Agent network access | Host Podman delegation |
+| --- | --- | --- |
+| unset or empty | Launch stops before engine calls and state creation | No session |
+| `offline` | Own loopback, pipes and connected socket pairs only | Rejected |
+| `provider` | As offline, plus one preconnected channel to an exact-destination proxy | Rejected |
+| `unrestricted` | Ordinary runtime networking (the previous behavior) | Exact opt-in allowed |
+
+**Migration.** Existing launches must add `CODEX_CONTAINER_NETWORK=unrestricted`
+to keep today's networking, and `CODEX_CONTAINER_MAINTENANCE=1` to commands that
+build the image. Restricted failures never fall back to unrestricted
+networking. Offline sessions cannot reach the OpenAI API.
+
+The restricted implementation is shared with `claude-container` and copied
+unchanged from its tag `sandbox-ref-2`; see
+[docs/network-contract.md](docs/network-contract.md) and
+[network/README.md](network/README.md). Every agent container, in every mode,
+drops all capabilities, enables no-new-privileges and receives the memory, CPU
+and process budgets.
+
+### Restricted prerequisites
+
+`offline` and `provider` require:
+
+- host Python 3 and a same-host Unix rootless Podman service (explicit
+  `CONTAINER_HOST=unix:///...`) with Netavark and Podman ≥ 4.9;
+- Linux or WSL2 x86_64 with standard OCI seccomp and usable Landlock ABI ≥ 3;
+- a protected installation: this checkout, the guard, the policy and the
+  profile must lie outside every writable workspace and state tree;
+- the static guard `network/bin/sandbox-egress-guard` and its SHA-256 manifest;
+- a current local qualification report.
+
+Unsupported setups fail closed. SELinux and AppArmor stay active when enabled;
+their denials stop startup and are never disabled by the wrapper.
+
+### Operator build inputs
+
+Restricted modes run from a protected installation: a copy of this checkout on
+native Linux storage (on WSL, not under `/mnt/<drive>`) whose directories are
+owned by you and not writable by group or others, outside any workspace or
+state directory. Until guided setup arrives, prepare the guard and proxy image
+manually there, under maintenance (see "Operator build inputs" in
+[network/README.md](network/README.md)):
+
+```bash
+install="$HOME/.local/opt/codex-container"     # protected native copy
+git clone --branch main /path/to/codex-container "$install" && cd "$install"
+export CODEX_CONTAINER_MAINTENANCE=1
+tag=$(python3 -I network/agent_profile.py image toolchain development)
+podman build --tag "$tag" --file network/guard-build.Containerfile network
+mkdir -p network/bin && bash network/build-guard.sh "$install/network/bin"
+podman build --tag localhost/codex-egress:local --file network/Containerfile network
+podman image inspect --format '{{.Id}}' localhost/codex-egress:local
+```
+
+Pass the printed immutable image ID (or a registry digest) as
+`CODEX_CONTAINER_EGRESS_IMAGE`. A missing proxy image is pulled only under
+maintenance and only by digest. Restricted sessions run the runtime image by
+its immutable ID.
+
+### Qualification
+
+```bash
+CONTAINER_HOST=unix:///run/user/$(id -u)/podman/podman.sock \
+CODEX_CONTAINER_NETWORK=offline bash ./codex-container.sh --container-qualify
+```
+
+`--container-qualify` must be used alone. It is credential-free, uses fixed
+disposable controls and never runs an application command or grants image
+maintenance. Every ordinary `offline` or `provider` launch first runs the same
+check and stops with `qualification-required` when the report is missing or
+stale. The report is bound to the boot, engine, backend and security policy,
+code and images, policy and profile, CA trust and hardening settings (agent
+budgets and lifetime included). Documented behaviors:
+
+- a reboot changes the boot identity, so the next launch requires
+  requalification;
+- when the active LSM policy cannot be identified, the gate runs on every
+  launch instead of reusing the report;
+- `network/release_acceptance.json` is empty, so a passing installation is
+  reported as `locally-qualified`, not release-measured.
+
+### Provider mode
+
+```bash
+export CONTAINER_HOST=unix:///run/user/$(id -u)/podman/podman.sock
+export CODEX_CONTAINER_NETWORK=provider
+export CODEX_CONTAINER_NETWORK_POLICY="$PWD/agent/policies/default.json"
+export CODEX_CONTAINER_NETWORK_PROFILE=openai-account   # or openai-api
+export CODEX_CONTAINER_NETWORK_RUNTIME_DIR="$HOME/.local/state/codex-egress"  # private, native
+export CODEX_CONTAINER_EGRESS_IMAGE=sha256:...           # immutable proxy image ID
+bash ./codex-container.sh --container-qualify
+bash ./codex-container.sh
+```
+
+| Profile | Allowed destinations | Credentials |
+| --- | --- | --- |
+| `openai-api` | `api.openai.com:443` | `OPENAI_API_KEY`, forwarded only to this profile |
+| `openai-account` | `auth.openai.com:443`, `chatgpt.com:443` | ChatGPT sign-in stored in `CODEX_HOME` |
+
+The policy revision is `openai-2026-11-09-v1`, measured against Codex 0.167.0.
+The account inventory comes from the official authentication documentation
+and a static scan of the installed CLI; authenticated sign-in, request and
+refresh are **unverified** until the operator check recorded in
+[docs/validation.md](docs/validation.md). Wildcards are never used; gateways
+and other providers need separately named profiles.
+
+ChatGPT browser sign-in needs a callback on `localhost:1455` that the host
+browser cannot reach in the container; no port is published. Use
+`codex login --device-auth` (it must be enabled in the ChatGPT security
+settings or workspace permissions) or an API key with `openai-api`.
+
+Provider sessions place these overrides before your arguments:
+`check_for_update_on_startup=false`, `analytics.enabled=false`,
+`feedback.enabled=false`, `otel.exporter`, `otel.trace_exporter` and
+`otel.metrics_exporter` set to `"none"`, and `features.apps`,
+`features.plugins`, `features.remote_plugin` and
+`features.plugin_discovery_prefetch` set to `false`. They take precedence over
+the agent-writable `config.toml`; a `-c` you pass after them is your explicit
+choice and wins. No environment variable controls these settings, so
+`--container-shell` receives none; remote MCP servers configured in
+`config.toml` have no disable control. The proxy denies all such traffic
+anyway, because it reaches no allowed host.
+
+**Limits and residual risk.** The proxy binds the TLS server name of the
+initial ClientHello, and of the retried one after a TLS 1.3 HelloRetryRequest,
+to the CONNECT host before forwarding; missing or mismatched names, ECH and
+non-TLS traffic fail closed. TLS 1.2 renegotiation is encrypted and not
+inspected. This does not prove exclusive OpenAI application access: the HTTP
+`Host`, shared-service routing and provider-side forwarding stay opaque, and
+allowed services can receive data. An injected agent can send workspace data
+to an allowed host (`api.openai.com` for `openai-api`; `auth.openai.com` and
+`chatgpt.com` for `openai-account`) with an attacker's key or account; only
+`offline` removes this. Provider-hosted tools, such as web search, run at the
+provider outside this boundary.
+
+### Codex's own sandbox
+
+Codex's command sandbox cannot run under the guard. With Codex 0.167.0 the
+Bubblewrap path needs a Netlink socket to configure loopback in a new network
+namespace, which the guard denies, and the Landlock-only path refuses to run
+without Bubblewrap. Both fail before the command runs. In `offline` and
+`provider`, run Codex with its sandbox disabled, for example
+`--sandbox danger-full-access`, `--yolo` or `CODEX_YOLO=1`; the guard stays the
+enforced boundary: no network beyond the selected mode, no new Unix sockets, no
+capabilities, and a read-only image root. Disabling
+Codex's sandbox never changes the outer guard, network or proxy restrictions.
+`unrestricted` sessions keep Codex's own sandbox working as before. The
+measurement is in [docs/validation.md](docs/validation.md).
+
 ## Mounts and security
 
 Both Codex and shell sessions use a read-only image root filesystem. The
@@ -486,10 +684,30 @@ Run credential-free wrapper tests using standard-library Python:
 ```bash
 python3 -B -m unittest discover -s tests -p test_wrapper.py -v
 python3 -B -m unittest discover -s tests -p test_image_pins.py -v
+python3 -B -m unittest discover -s tests -p test_reference_copy.py -v
 bash -n codex-container.sh tests/run-runtime.sh
 git diff --check
 openspec validate --specs --strict
 ```
+
+`tests/run-runtime.sh` runs the suites in a disposable runner container with
+native volume storage, which also avoids a caller whose `/tmp` is `noexec` or
+whose workspace cannot bind Unix sockets:
+
+```bash
+bash tests/run-runtime.sh --wrapper              # wrapper suite
+bash tests/run-runtime.sh --shared               # copied shared suites
+bash tests/run-runtime.sh --network-policy       # protected policy paths
+bash tests/run-runtime.sh --mux                  # multiplexed relay
+bash tests/run-runtime.sh --network-feasibility  # isolated topology
+bash tests/run-runtime.sh --guard                # static guard (toolchain image)
+bash tests/run-runtime.sh --qualification        # local qualification gate
+bash tests/run-runtime.sh --network              # restricted wrapper acceptance
+```
+
+The restricted modes build a disposable guard and proxy, qualify a disposable
+installation and use a local TLS fixture with a synthetic Responses API; they
+need no credentials and send no model requests to OpenAI.
 
 The wrapper suite uses synthetic Podman responses; it does not prove real
 mount or namespace enforcement. Wrong-owner and non-enforcing filesystem

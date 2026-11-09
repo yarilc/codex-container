@@ -351,3 +351,162 @@ because the agent sandbox mounts `/tmp` `noexec` and its v9fs workspace cannot
 bind Unix sockets; both limitations belong to the test caller, not the wrapper.
 Not covered by this change: Python budget normalization, setup questions and
 qualification binding, which arrive with the Wave 3 network port.
+
+## Network egress port (`add-network-egress`): 2026-11-09
+
+Reference: `claude-container` tag `sandbox-ref-2` (commit
+`56a6f03216c49c78426fc7e9ced96c9fecc12685`). Measurements use
+`localhost/codex-cli:latest` with `codex-cli 0.167.0`, run with `--network=none`
+and a disposable `CODEX_HOME`; no credentials and no model requests.
+
+### OpenAI host inventory and authentication (task 2.1)
+
+Sources: the official authentication page
+(`https://developers.openai.com/codex/auth`, redirected to
+`https://learn.chatgpt.com/docs/auth`, read 2026-11-09) and a static scan of the
+URLs in the installed `@openai/codex` 0.167.0 Linux x86_64 binaries.
+
+| Item | Result |
+| --- | --- |
+| API key | `OPENAI_API_KEY` (also `CODEX_API_KEY` in the binary); requests go to `https://api.openai.com/v1/responses` |
+| ChatGPT sign-in | Browser callback on `localhost:1455` (unusable in the container); device code with `codex login --device-auth` (documented as beta; it must be enabled in the ChatGPT security settings or workspace permissions) |
+| Account hosts (candidates) | `auth.openai.com` (`/oauth/token`, `/oauth/revoke`, `/api/accounts` with the `/deviceauth/usercode` and `/deviceauth/token` paths) and `chatgpt.com` (`/backend-api/codex` model requests with account credentials) |
+| Optional hosts seen, not allowed | `ab.chatgpt.com` (OTLP metrics), `persistent.oaistatic.com`, `developers.openai.com`, `github.com`, `registry.npmjs.org`, CDNs and plugin/MCP sites |
+| CA trust | `CODEX_CA_CERTIFICATE`, falling back to `SSL_CERT_FILE` (documented) |
+
+The documentation lists no required hosts. The account hosts stay candidates,
+marked unverified in the policy, until the operator-run sign-in, request and
+refresh check.
+
+### Optional-traffic controls (task 2.2)
+
+Each key was written to a disposable `config.toml` and loaded with
+`codex exec --strict-config`; Codex 0.167.0 rejects unknown keys with
+`unknown configuration field` (checked with `bogus_key_xyz` and
+`analytics.bogus`), and accepted every key below. The wrapper passes them as
+`-c` overrides, which take precedence over the writable `config.toml`.
+
+| Traffic | Control | Status |
+| --- | --- | --- |
+| Update check | `check_for_update_on_startup=false` | Supported |
+| Analytics | `analytics.enabled=false` | Supported |
+| Feedback upload | `feedback.enabled=false` | Supported |
+| OTEL export | `otel.exporter="none"`, `otel.trace_exporter="none"`, `otel.metrics_exporter="none"` | Supported |
+| Connectors and remote plugins | `features.apps=false`, `features.plugins=false`, `features.remote_plugin=false`, `features.plugin_discovery_prefetch=false` | Supported |
+| Remote MCP servers configured by the user | None that removes entries from `config.toml` | Missing; the proxy denies them |
+| Provider-hosted web search | `web_search="disabled"` is accepted but is not set: the search runs at the provider, outside the local boundary | Documented |
+
+No environment variable controls these settings, so `--container-shell` gets
+no overrides; any `codex` started from that shell is still limited by the guard
+and the proxy.
+
+### Protected `-c` precedence (task 5.5)
+
+Measured with `codex features list` and `features.apps` (default `true`):
+`-c features.apps=false` gives `false`; `-c features.apps=false -c
+features.apps=true` gives `true` (the last `-c` wins); a `config.toml` setting
+`apps = true` with `-c features.apps=false` gives `false`; `--enable apps` after
+the override gives `true`. The protected overrides therefore beat the
+agent-writable `config.toml`, while an operator `-c` or `--enable` placed after
+them is an explicit operator choice and wins. A legacy `profile = "p"` key in
+`config.toml` makes Codex refuse to load the configuration.
+
+### Codex's own sandbox under the guard (task 2.3)
+
+Measured through `codex-container.sh --container-shell` in `offline` mode, with
+a disposable qualified installation, the production guard
+(`abi3-seccomp-mux-v1`, ABI 3), no capabilities and no-new-privileges, in both
+state modes:
+
+| Path | Result |
+| --- | --- |
+| Default (`codex sandbox -- …`, Bubblewrap) | Fails before the command: `bwrap: loopback: Failed to create NETLINK_ROUTE socket: Operation not permitted` (the guard denies Netlink sockets) |
+| `--enable use_legacy_landlock` | Fails before the command: `filesystem-restricted execution requires bubblewrap to isolate app-server sockets` |
+| `bwrap --ro-bind / / --dev /dev true` directly | `Failed to make / slave: Operation not permitted` |
+
+Neither inner path works, so design fallback 3 applies: in restricted modes
+Codex runs with its own sandbox disabled (`--sandbox danger-full-access`,
+`--yolo` or `CODEX_YOLO=1`) and the guard is the enforced boundary. The guard
+was not changed. The baseline (unrestricted) measurement of 2026-11-09, where
+Codex's sandbox works without the guard, still holds.
+`test_codex_native_sandbox_fails_closed_under_the_guard` keeps this outcome as a
+regression check.
+
+### Executable temporary storage under the guard (task 2.4)
+
+The guard validates that private `/tmp`, `/run` and `/var/tmp` are not host
+binds; it does not require `noexec`. With Codex's layout (executable `/tmp` and
+`/var/tmp` tmpfs, executable `/codex-home` tmpfs in shared mode or the bind of
+`CODEX_CONTAINER_STATE_DIR` in isolated mode), the guard accepted the layout in
+every restricted session of the runtime suites, and qualification passed in
+both state modes. No shared file was changed.
+
+### Shared copy and operator artifacts (tasks 1.1, 3.1–3.3, 4.1)
+
+Environment: WSL2 `6.6.87.2-microsoft-standard-WSL2` x86_64, Landlock ABI 3,
+Podman client 4.3.1 / server 4.9.3, Netavark, same-host Unix user service.
+
+| Item | Result |
+| --- | --- |
+| Copy | `git archive sandbox-ref-2` of `network/`, `setup/diagnostics.py` and 21 shared tests; `diff -r` against the tag: no differences; 50 files in the `tests/test_reference_copy.py` manifest |
+| `tests/test_reference_copy.py` | Passed: 5 tests, including an injected byte change, a missing and an extra file, and an injected `Codex` literal |
+| `python3 -I network/agent_profile.py` queries | `CODEX_CONTAINER_NETWORK`, `io.codex-container.session` |
+| Toolchain `localhost/codex-guard-toolchain:development` | Built from `network/guard-build.Containerfile`: ID `0b69ba43c894c4599fcfc0fa7b5e3c150ec26fcf7a2690e3c83708688ff9402c`, the measured reference toolchain |
+| Guard | SHA-256 `0c647dfea75667a46a8cd4cc4dfea4ee3d10363752ea7ce5957162bacd6d7ec9`, identical to the latest `claude-container` build |
+| Proxy `localhost/codex-egress:local` | ID `13adbfafd7bdc49393c142ecb7ede21ae6e1a7e4c1d842b1518078cdb5590621` (base pulled by digest under maintenance) |
+| Runtime image `localhost/codex-cli:latest` | ID `a7633287914e893f995c981968c8a76eac31e7b914b512554e25ca2f3fa01487`, `codex-cli 0.167.0`; `/opt/sandbox-egress/relay.py` and `mux.py` match `network/` by SHA-256 (mode `0777` from the build context, as in the reference image; the image root is read-only at runtime) |
+| `tests/test_image_pins.py` | Passed: 3 tests, including an injected `CODEX_VERSION` divergence naming both versions |
+| `bash tests/run-runtime.sh --shared` | Passed: 133 tests, 27 skipped (real-engine checks, run by the modes below) |
+| `--network-policy` | Passed: 14 tests |
+| `--mux` | Passed: 26 tests |
+| `--network-feasibility` | Passed: 1 test |
+| `--guard` | Passed: 19 tests, 1 skipped (the 305-second idle check), including the three guarded multiplex checks through the Codex `test_network_runtime.py` fixture |
+| `--guard-idle` | Passed: 1 test (idle provider channel resumes after 305 seconds) |
+| `--qualification` | Passed: 18 tests: installed offline and provider qualification, missing, stale and unsafe reports, cancelled gates, concurrent atomic reports and the fixed probe that cannot run an application |
+
+### Wrapper integration (group 5)
+
+| Check | Result |
+| --- | --- |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 64 tests. The 52 existing tests passed unchanged after adding `CODEX_CONTAINER_NETWORK=unrestricted` and `CODEX_CONTAINER_MAINTENANCE=1`; 12 new tests cover missing and invalid modes, delegation rejection, the maintenance gate, proxy acquisition, isolated home privacy and escapes, CA modes, offline and provider order and arguments, protected overrides and the API key, failed qualification, interrupted helpers and the qualification entry points |
+| `bash tests/run-runtime.sh` | Passed: 14 tests (unrestricted lifecycle, delegation, YOLO, budgets, workspace, build-context exclusion with the relay inputs) |
+
+### Restricted runtime acceptance (group 6)
+
+| Mode | Result |
+| --- | --- |
+| `--network` | Passed: 21 tests in both state modes: offline and provider hardening, delegation grid, real proxy with CONNECT/SNI binding and certificate verification, mismatched SNI and denied authorities, proxy death and exhaustion, budgets (64 verified TLS connections: `memory.peak` 41607168 of 268435456, `pids.current` 68 of 128), concurrent policies and owned cleanup, interrupted creation, readiness binding, arguments/stdin/status/TTY through the guard, bootstrap failure, Windows-path workspace, stalled proxy cleanup, CLI permission modes, the API key only for `openai-api`, tampered bootstrap, unsafe policy and missing proxy image |
+| Codex through the relay | `codex exec` with a synthetic Responses API on `localhost.localdomain:8443` (custom provider, `wire_api="responses"`, CA via `CODEX_CONTAINER_TRUST_HOST_CA`): the Rust client used `HTTPS_PROXY`, loaded `SSL_CERT_FILE`, completed TLS 1.3 after a HelloRetryRequest, streamed the response, ran the fixture's shell tool call (Unix sockets denied inside the tool) and finished the turn |
+| Fixture certificate | Codex's rustls verifier rejected the first fixture certificate, a self-signed CA (`CA:TRUE`) used as the server certificate, while curl and Python accepted it; the per-agent fixture now generates `CA:FALSE` with `serverAuth` |
+| Optional traffic in shell mode | With no overrides, Codex at startup tried `chatgpt.com`, `github.com`, `api.github.com` (plugin sync) and `ab.chatgpt.com` (metrics); all were `policy-denied` |
+| Concurrency (task 6.4) | Two concurrent Codex provider sessions (suite) while `claude-container`'s `test_concurrent_policies_and_signal_cleanup_are_owned` ran at the same time (passed, 1 test): distinct labels and resources; afterwards no `io.codex-container.*` container, network or volume remained |
+| Residual containers | The first suite run, before the certificate fix, left two `io.codex-container.session` containers: the harness killed the wrapper with SIGKILL after its 45-second timeout, the documented case where owned cleanup cannot run. They were identified by label and test volume and removed |
+
+### Authenticated checks (operator-run)
+
+Unavailable: no real OpenAI credentials or model requests are used by the
+automated suites. Before declaring a profile verified, the operator runs in
+`provider` mode, with a qualified installation:
+
+| Check | Profile | Status |
+| --- | --- | --- |
+| `codex login --device-auth`, then one request | `openai-account` | Unavailable (not run) |
+| Token refresh after expiry with saved credentials | `openai-account` | Unavailable (not run) |
+| Streaming request with `OPENAI_API_KEY` | `openai-api` | Unavailable (not run) |
+
+Denials recorded during these checks (`denials.jsonl` in the session runtime
+directory) revise the account inventory under a new policy revision; the
+allowlist is never broadened with wildcards.
+
+### Final verification (task 7.4)
+
+| Check | Result |
+| --- | --- |
+| `bash -n codex-container.sh tests/run-runtime.sh` | Passed |
+| ShellCheck (`koalaman/shellcheck:stable`) | Only SC2015, SC2054 and SC2329, the same informational classes as the previous wrapper |
+| `bash tests/run-runtime.sh --wrapper` | 64 tests: one run had 1 failure in `test_lifetime_argument_and_notice`, which passed when rerun alone; this is the known whole-second `SECONDS` granularity of the lifetime notice, unchanged by this change and tracked separately |
+| `--shared`, default runtime mode | Passed: 133 tests (27 skipped, run by the modes), 14 tests |
+| All runtime modes | Passed; see the tables above |
+| `openspec validate add-network-egress --strict` | Passed |
+| `git diff --check` | Passed |
+| markdownlint (`davidanson/markdownlint-cli2`) | Remaining findings are table and code lines over 80 columns and the existing duplicate "Archive disposition" headings, as in the previous documents |

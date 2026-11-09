@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-IMAGE="${CODEX_CONTAINER_IMAGE:-localhost/codex-cli:latest}"
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
-CODEX_DIR="${CODEX_HOME:-${HOME}/.codex}"
-WORKSPACE="$(pwd -P)"
-
 usage() {
     cat <<'EOF'
 Usage: codex-container.sh [container option] [codex arguments...]
@@ -29,6 +24,8 @@ Verification expects one launch record or two delegated-socket records, with
 an optional single final LF. Additional records or CR characters are rejected.
 
 Container options:
+  --container-qualify    verify a prepared restricted installation with fixed
+                         local controls; must be used alone
   --container-build      build or refresh the container image before starting
   --container-shell      open a shell instead of starting Codex
   --container-git-worktree mount the parent of the current physical directory
@@ -48,13 +45,30 @@ Only this invocation's container is removed. SIGKILL or engine loss can leave
 residual containers requiring explicit cleanup.
 
 Environment:
+  CODEX_CONTAINER_NETWORK offline, provider, or unrestricted; required for every
+                         launch (unrestricted is the previous behavior)
+  CODEX_CONTAINER_NETWORK_PROFILE protected provider policy profile name
+                         (openai-api or openai-account)
+  CODEX_CONTAINER_NETWORK_POLICY absolute operator policy JSON path
+  CODEX_CONTAINER_NETWORK_RUNTIME_DIR private native directory at its host path
+  CODEX_CONTAINER_EGRESS_IMAGE immutable proxy image ID or registry digest
+  CODEX_CONTAINER_MAINTENANCE authorize image builds and proxy pulls only with
+                         exact value 1, including the build of a missing image
   CODEX_CONTAINER_IMAGE  image name (default: localhost/codex-cli:latest)
   CODEX_CONTAINER_PODMAN expose the host Podman socket only when exactly 1
-                         (default: disabled; other values also disable access)
+                         (default: disabled; other values also disable access);
+                         rejected in offline and provider modes
   CODEX_CONTAINER_PODMAN_SOCKET absolute socket override for enabled access
                          (then Unix CONTAINER_HOST, then XDG_RUNTIME_DIR or
                          /run/user/<uid>, with /podman/podman.sock appended)
   CODEX_HOME             Codex home on the host (default: ~/.codex)
+  CODEX_CONTAINER_STATE_DIR optional isolated home mounted at /codex-home;
+                         conflicts with a nonempty CODEX_HOME; no state is imported
+  CODEX_CONTAINER_TRUST_HOST_CA trust a host CA bundle: 1, true, or yes
+                         (default: disabled)
+  CODEX_CONTAINER_CA_BUNDLE CA bundle file to trust (default: first of
+                         /etc/ssl/certs/ca-certificates.crt and
+                         /etc/pki/tls/certs/ca-bundle.crt)
   CODEX_YOLO             enable Codex --yolo (default: disabled)
                          1/true/yes enable; empty/0/false/no disable
                          words are case-insensitive; other values are errors
@@ -67,6 +81,14 @@ Environment:
                          (default: 0, disabled by default)
   CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE exact 1 permits a refused sensitive
                          workspace with a warning (default: disabled)
+  OPENAI_API_KEY         forwarded only to provider sessions using openai-api
+
+Migration: every launch now needs an explicit CODEX_CONTAINER_NETWORK. Set
+CODEX_CONTAINER_NETWORK=unrestricted to keep the previous networking behavior,
+and add CODEX_CONTAINER_MAINTENANCE=1 to commands that build the image, e.g.:
+  CODEX_CONTAINER_NETWORK=unrestricted CODEX_CONTAINER_MAINTENANCE=1 bash ./codex-container.sh --container-build
+Offline sessions cannot reach the OpenAI API. Restricted failures never retry
+unrestricted networking.
 
 Socket access permits new host mounts beyond the workspace with the service
 user's authority. YOLO and socket access are independent. The service reports
@@ -80,31 +102,110 @@ The writable workspace (or worktree parent) must not physically be /, /home,
 drive root; descendants such as /mnt/d/project are allowed.
 When the lifetime limit stops a session, a notice is printed and the engine
 client's exit status is returned.
+
+Restricted modes (offline, provider) require host Python 3, a same-host Unix
+rootless Netavark service with Podman >= 4.9, standard OCI seccomp, usable
+Landlock ABI >= 3, a protected installation outside writable workspace/state
+trees, a static guard and SHA-256 manifest in network/bin, and a current local
+qualification report (run --container-qualify alone after preparation or
+relevant updates). Changed boot, engine/backend/security, code/images,
+policy/profile, CA trust or hardening invalidates the report; an unidentifiable
+active LSM policy requires the gate on each launch. Locally-qualified
+installations are distinguished from release-measured acceptance records.
+Provider mode uses an external CONNECT proxy that binds the TLS server name
+(initial and retried ClientHello) to the CONNECT host before forwarding; it
+does not prove exclusive OpenAI application access. Allowed services can receive
+data: an injected agent can send workspace data to an allowed host (api:
+api.openai.com; account: auth.openai.com and chatgpt.com) with an attacker's
+key or account. Only offline removes this. Provider-hosted tools such as web
+search run at the provider, outside this boundary. Provider sessions disable
+update checks, analytics, feedback, OTEL export, connectors and remote plugins
+with -c overrides placed before your arguments; the writable config.toml cannot
+override them. ChatGPT browser sign-in is unsupported in the container; use
+"codex login --device-auth" or an API key. Codex's own command sandbox cannot
+run under the guard (it needs Netlink or Bubblewrap); in offline and provider
+modes run Codex with --sandbox danger-full-access or CODEX_YOLO=1, and the
+guard remains the enforced boundary. See network/README.md and
+docs/network-contract.md.
 EOF
 }
 
 die() { printf 'codex-container: %s\n' "$*" >&2; exit 1; }
 
-container_prefix="${WORKSPACE##*/}"
-container_prefix="$(printf '%s' "$container_prefix" | sed -E 's/[^[:alnum:]_.-]+/-/g; s/^[.-]+//; s/[.-]+$//')"
-[[ -n "$container_prefix" ]] || container_prefix="codex-container"
+# Help takes precedence regardless of option order and never needs Podman.
+for arg in "$@"; do
+    [[ "$arg" != --container-help ]] || { usage; exit 0; }
+done
+for arg in "$@"; do
+    if [[ "$arg" == --container-qualify ]]; then
+        [[ $# == 1 ]] || die '--container-qualify must be used alone'
+        command -v python3 >/dev/null || die 'host Python 3 is required for qualification'
+        script_path=$(readlink -f -- "${BASH_SOURCE[0]}")
+        script_dir=$(dirname -- "$script_path")
+        exec python3 -I "$script_dir/network/qualify.py" qualify
+    fi
+done
 
 build_image=0
+qualification_probe=0
 shell_mode=0
 git_worktree=0
 args=()
-while (($#)); do
-    case "$1" in
-        --container-build) build_image=1; shift ;;
-        --container-shell) shell_mode=1; shift ;;
-        --container-git-worktree) git_worktree=1; shift ;;
-        --container-help) usage; exit 0 ;;
-        *) args+=("$1"); shift ;;
+for arg in "$@"; do
+    case "$arg" in
+        --container-qualify-probe)
+            [[ $# == 1 ]] || die 'the fixed qualification probe must be used alone'
+            qualification_probe=1 ;;
+        --container-build) build_image=1 ;;
+        --container-shell) shell_mode=1 ;;
+        --container-git-worktree) git_worktree=1 ;;
+        *) args+=("$arg") ;;
     esac
 done
 
+# An explicit mode precedes every other check, engine query and state operation.
+# add-container-setup replaces this message with guided setup.
+[[ -n "${CODEX_CONTAINER_NETWORK:-}" ]] \
+    || die 'CODEX_CONTAINER_NETWORK is required: set offline, provider, or unrestricted (unrestricted keeps the previous networking behavior)'
+
+boolean() {
+    case "${2,,}" in
+        1|true|yes) printf 1 ;;
+        ''|0|false|no) printf 0 ;;
+        *) die "$1 must be 0, 1, true, false, yes, or no" ;;
+    esac
+}
+codex_args=("${args[@]}")
+yolo="${CODEX_YOLO:-}"
+case "${yolo,,}" in
+    1|true|yes)
+        ((shell_mode)) || codex_args=(--yolo "${args[@]}")
+        ;;
+    ''|0|false|no) ;;
+    *) die "CODEX_YOLO must be 0, 1, true, false, yes, or no" ;;
+esac
+podman_access=0
+[[ "${CODEX_CONTAINER_PODMAN:-}" != 1 ]] || podman_access=1
+trust_host_ca=$(boolean CODEX_CONTAINER_TRUST_HOST_CA "${CODEX_CONTAINER_TRUST_HOST_CA:-}")
+network_mode=$CODEX_CONTAINER_NETWORK
+case "$network_mode" in
+    offline|provider|unrestricted) ;;
+    *) die 'CODEX_CONTAINER_NETWORK must be offline, provider, or unrestricted' ;;
+esac
+if [[ "$network_mode" != unrestricted ]] && ((podman_access)); then
+    die 'restricted networking rejects CODEX_CONTAINER_PODMAN=1: the host API bypasses egress enforcement; select explicit unrestricted mode for delegation'
+fi
+if [[ "$network_mode" == provider ]]; then
+    [[ -n "${CODEX_CONTAINER_NETWORK_PROFILE:-}" && -n "${CODEX_CONTAINER_NETWORK_POLICY:-}" ]] \
+        || die 'provider mode requires CODEX_CONTAINER_NETWORK_PROFILE and CODEX_CONTAINER_NETWORK_POLICY'
+    [[ -n "${CODEX_CONTAINER_NETWORK_RUNTIME_DIR:-}" && -n "${CODEX_CONTAINER_EGRESS_IMAGE:-}" ]] \
+        || die 'provider mode requires a private host-path CODEX_CONTAINER_NETWORK_RUNTIME_DIR and immutable CODEX_CONTAINER_EGRESS_IMAGE'
+fi
+[[ -z "${CODEX_CONTAINER_STATE_DIR:-}" || -z "${CODEX_HOME:-}" ]] \
+    || die 'CODEX_CONTAINER_STATE_DIR conflicts with CODEX_HOME; unset CODEX_HOME to isolate state, or unset CODEX_CONTAINER_STATE_DIR to keep shared state'
+
 # Session budgets and lifetime, validated before any engine or state operation.
-# Same rules and messages as the claude-container reference (sandbox-ref-2).
+# network/agent_budgets.py implements the same rules for qualification.
 # Only an unset budget selects its default; no value disables a budget.
 memory_text=${CODEX_CONTAINER_MEMORY_LIMIT-4g}
 cpu_text=${CODEX_CONTAINER_CPU_LIMIT-2}
@@ -135,6 +236,7 @@ pids_limit=$((10#$pids_text))
 run_timeout=$((10#$timeout_text))
 
 # Refuse sensitive writable workspaces before any engine or state operation.
+WORKSPACE="$(pwd -P)"
 workspace_mount="$WORKSPACE"
 if ((git_worktree)); then
     workspace_mount="$(dirname -- "$WORKSPACE")"
@@ -155,16 +257,12 @@ if ((unsafe_workspace)); then
 fi
 
 command -v podman >/dev/null || die "podman is not installed on the host"
-
-codex_args=("${args[@]}")
-yolo="${CODEX_YOLO:-}"
-case "${yolo,,}" in
-    1|true|yes)
-        ((shell_mode)) || codex_args=(--yolo "${args[@]}")
-        ;;
-    ''|0|false|no) ;;
-    *) die "CODEX_YOLO must be 0, 1, true, false, yes, or no" ;;
-esac
+script_path=$(readlink -f -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+IMAGE="${CODEX_CONTAINER_IMAGE:-localhost/codex-cli:latest}"
+container_prefix="${WORKSPACE##*/}"
+container_prefix="$(printf '%s' "$container_prefix" | sed -E 's/[^[:alnum:]_.-]+/-/g; s/^[.-]+//; s/[.-]+$//')"
+[[ -n "$container_prefix" ]] || container_prefix="codex-container"
 
 [[ -z "${CONTAINER_CONNECTION:-}" ]] || die "Named Podman connections are not supported; use local Podman or a same-host Unix CONTAINER_HOST"
 case "${CONTAINER_HOST:-}" in
@@ -195,8 +293,20 @@ case "$service_remote" in
         ;;
     *) die "Cannot verify launch engine ServiceIsRemote; check that Podman reports true or false" ;;
 esac
+if [[ "$network_mode" != unrestricted ]]; then
+    command -v python3 >/dev/null || die 'host Python 3 is required for restricted network policy validation'
+    [[ "$service_remote" == true ]] || die 'restricted networking currently requires the tested same-host Unix service; local-engine enforcement is unverified'
+    capture_engine_info info --format '{{.Host.NetworkBackend}}' || die 'cannot verify restricted network backend'
+    network_backend=$engine_response
+    capture_engine_info version --format '{{.Server.Version}}' || die 'cannot verify restricted network server version'
+    network_version=$engine_response
+    capture_engine_info info --format '{{json .Host}}' || die 'cannot verify restricted platform security policy'
+    network_platform=$engine_response
+elif ((qualification_probe)); then
+    die 'qualification probes require restricted networking'
+fi
 
-if [[ "${CODEX_CONTAINER_PODMAN:-}" == 1 ]]; then
+if ((podman_access)); then
     socket="${CODEX_CONTAINER_PODMAN_SOCKET:-}"
     if [[ -z "$socket" && "${CONTAINER_HOST:-}" == unix:///?* ]]; then
         socket="${CONTAINER_HOST#unix://}"
@@ -219,21 +329,106 @@ if [[ "${CODEX_CONTAINER_PODMAN:-}" == 1 ]]; then
     [[ "$host_socket" == /* && "$host_socket" != *$'\n'* ]] || die "Podman service must report an absolute host socket path: $socket (check Host.RemoteSocket.Path)"
 fi
 
-if [[ ! -e "$CODEX_DIR" && ! -L "$CODEX_DIR" ]]; then
-    (umask 077; mkdir -p -- "$CODEX_DIR") || die "Cannot create Codex state: $CODEX_DIR (choose an accessible private CODEX_HOME)"
-fi
-[[ -d "$CODEX_DIR" ]] || die "Codex state is not a directory: $CODEX_DIR (choose a private CODEX_HOME)"
-state_path="$CODEX_DIR"
-CODEX_DIR=$(CDPATH= cd -- "$state_path" && pwd -P) || die "Cannot resolve Codex state: $state_path (check directory access or choose a private CODEX_HOME)"
-[[ -r "$CODEX_DIR" && -w "$CODEX_DIR" && -x "$CODEX_DIR" ]] || die "Codex state is not accessible: $CODEX_DIR (check read/write/traverse permissions or choose a private CODEX_HOME)"
-state_owner=$(stat -c '%u' -- "$CODEX_DIR") || die "Cannot inspect Codex state owner: $CODEX_DIR"
-state_mode=$(stat -c '%a' -- "$CODEX_DIR") || die "Cannot inspect Codex state permissions: $CODEX_DIR"
-[[ "$state_owner" == "$(id -u)" ]] || die "Codex state must belong to the calling user: $CODEX_DIR (correct ownership or choose a private CODEX_HOME)"
-[[ "$state_mode" =~ ^[0-7]{3,4}$ ]] || die "Cannot verify Codex state permissions: $CODEX_DIR"
-(( (8#$state_mode & 077) == 0 )) || die "Codex state must be private: $CODEX_DIR (chmod 700 your directory, or choose CODEX_HOME on a Linux filesystem that enforces Unix permissions)"
+# Create missing state privately and validate the resolved directory; never
+# repair existing permissions. Sets resolved_state.
+caller_uid=$(id -u)
+resolved_state=''
+private_state() {
+    local label=$1 variable=$2 path=$3 owner mode
+    if [[ ! -e "$path" && ! -L "$path" ]]; then
+        (umask 077; mkdir -p -- "$path") || die "Cannot create $label: $path (choose an accessible private $variable)"
+    fi
+    [[ -d "$path" ]] || die "$label is not a directory: $path (choose a private $variable)"
+    resolved_state=$(CDPATH='' cd -- "$path" && pwd -P) || die "Cannot resolve $label: $path (check directory access or choose a private $variable)"
+    path=$resolved_state
+    [[ -r "$path" && -w "$path" && -x "$path" ]] || die "$label is not accessible: $path (check read/write/traverse permissions or choose a private $variable)"
+    owner=$(stat -c '%u' -- "$path") || die "Cannot inspect $label owner: $path"
+    mode=$(stat -c '%a' -- "$path") || die "Cannot inspect $label permissions: $path"
+    [[ "$owner" == "$caller_uid" ]] || die "$label must belong to the calling user: $path (correct ownership or choose a private $variable)"
+    [[ "$mode" =~ ^[0-7]{3,4}$ ]] || die "Cannot verify $label permissions: $path"
+    (( (8#$mode & 077) == 0 )) || die "$label must be private: $path (chmod 700 your directory, or choose $variable on a Linux filesystem that enforces Unix permissions)"
+}
 
+state_dir="${CODEX_CONTAINER_STATE_DIR:-}"
+CODEX_DIR=''
+if [[ -n "$state_dir" ]]; then
+    private_state 'Isolated Codex home' CODEX_CONTAINER_STATE_DIR "$state_dir"
+    state_dir=$resolved_state
+    # Resolve before creating children so an existing symlink cannot redirect
+    # configuration or the CA mount parent outside the dedicated home.
+    children=(.codex)
+    ((trust_host_ca == 0)) || children+=(ca)
+    for relative in "${children[@]}"; do
+        resolved=$(readlink -m -- "$state_dir/$relative")
+        [[ "$resolved" == "$state_dir/"* ]] || die "isolated configuration escapes state home: $state_dir/$relative"
+        private_state 'Isolated Codex configuration' CODEX_CONTAINER_STATE_DIR "$state_dir/$relative"
+    done
+    state_mounts=(--volume "$state_dir:/codex-home:rw")
+else
+    private_state 'Codex state' CODEX_HOME "${CODEX_HOME:-${HOME}/.codex}"
+    CODEX_DIR=$resolved_state
+    state_mounts=(
+        --tmpfs /codex-home:rw,exec,nosuid,nodev,mode=1777
+        --volume "$CODEX_DIR:/codex-home/.codex:rw"
+    )
+fi
+
+ca_bundle=''
+if ((trust_host_ca)); then
+    if [[ -n "${CODEX_CONTAINER_CA_BUNDLE:-}" ]]; then
+        [[ -f "$CODEX_CONTAINER_CA_BUNDLE" ]] || die "CODEX_CONTAINER_CA_BUNDLE is not a file: $CODEX_CONTAINER_CA_BUNDLE"
+        ca_bundle=$(readlink -f -- "$CODEX_CONTAINER_CA_BUNDLE")
+    else
+        for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+            if [[ -f "$candidate" ]]; then
+                ca_bundle=$candidate
+                break
+            fi
+        done
+        [[ -n "$ca_bundle" ]] || die 'no default CA bundle found; set CODEX_CONTAINER_CA_BUNDLE to a bundle file'
+    fi
+fi
+
+# Restricted sessions use the shared helper; this wrapper keeps only the
+# agent-specific command, environment, state and credentials.
+session_helper=(python3 -I "$script_dir/network/session.py")
+network_inputs=()
+qualification_inputs=()
+guard_digest=''
+if [[ "$network_mode" != unrestricted ]]; then
+    network_inputs=(--installation "$script_dir" --writable "$workspace_mount"
+        --mount-target "$workspace_mount" --mount-target /codex-home)
+    if [[ -n "$state_dir" ]]; then
+        network_inputs+=(--writable "$state_dir")
+    else
+        network_inputs+=(--writable "$CODEX_DIR")
+    fi
+    if [[ "$network_mode" == provider ]]; then
+        network_inputs+=(--policy "$CODEX_CONTAINER_NETWORK_POLICY"
+            --profile "$CODEX_CONTAINER_NETWORK_PROFILE" --proxy-image "$CODEX_CONTAINER_EGRESS_IMAGE"
+            --runtime "$CODEX_CONTAINER_NETWORK_RUNTIME_DIR")
+    fi
+    prepare_inputs=(--mode "$network_mode" --server-version "$network_version"
+        --backend "$network_backend" --endpoint "${CONTAINER_HOST:-}" --engine "$runtime_info")
+    if ((qualification_probe)); then
+        prepare_inputs+=(--probe --qualification-input "${CODEX_CONTAINER_QUALIFICATION_INPUT:-}"
+            --workspace "$WORKSPACE")
+    fi
+    prepared=$(printf '%s\n' "$network_platform" | "${session_helper[@]}" prepare "${network_inputs[@]}" "${prepare_inputs[@]}")
+    read -r guard_digest qualification_token qualification_tls <<< "$prepared"
+    if ((qualification_probe)); then
+        qualification_inputs=(--probe --token "$qualification_token" --workspace "$WORKSPACE"
+            --qualification-input "${CODEX_CONTAINER_QUALIFICATION_INPUT:-}")
+        [[ "$qualification_tls" != 1 ]] || qualification_inputs+=(--tls)
+    fi
+fi
+
+# Every build, including the automatic build of a missing image, is maintenance.
+maintenance=0
+[[ "${CODEX_CONTAINER_MAINTENANCE:-}" != 1 ]] || maintenance=1
 if ((build_image)); then
-    podman build --tag "$IMAGE" --file "$SCRIPT_DIR/Containerfile" "$SCRIPT_DIR"
+    ((maintenance)) || die 'image refresh requires exact CODEX_CONTAINER_MAINTENANCE=1; host pulls and build RUN steps are outside runtime filtering'
+    podman build --tag "$IMAGE" --file "$script_dir/Containerfile" "$script_dir"
 elif podman image exists "$IMAGE"; then
     :
 else
@@ -242,7 +437,26 @@ else
         printf 'codex-container: Cannot inspect image %s (status %s); check Podman storage and connection\n' "$IMAGE" "$image_status" >&2
         exit "$image_status"
     fi
-    podman build --tag "$IMAGE" --file "$SCRIPT_DIR/Containerfile" "$SCRIPT_DIR"
+    ((maintenance)) || die "image $IMAGE is absent; prepare it with exact CODEX_CONTAINER_MAINTENANCE=1 (build traffic is outside runtime filtering)"
+    podman build --tag "$IMAGE" --file "$script_dir/Containerfile" "$script_dir"
+fi
+if [[ "$network_mode" == provider ]]; then
+    if podman image exists "$CODEX_CONTAINER_EGRESS_IMAGE"; then
+        :
+    else
+        image_status=$?
+        [[ "$image_status" == 1 ]] || die 'cannot inspect immutable egress proxy image'
+        ((maintenance)) && [[ "$CODEX_CONTAINER_EGRESS_IMAGE" == *@sha256:* ]] \
+            || die 'proxy image is absent; prepare the pinned artifact under explicit operator maintenance authorization (CODEX_CONTAINER_MAINTENANCE=1 and a registry digest)'
+        podman pull "$CODEX_CONTAINER_EGRESS_IMAGE"
+    fi
+fi
+
+# Restricted sessions and their qualification bind the immutable image ID.
+if [[ "$network_mode" != unrestricted ]]; then
+    capture_engine_info image inspect --format '{{.Id}}' "$IMAGE" || die 'cannot resolve restricted runtime image identity'
+    [[ "$engine_response" =~ ^(sha256:)?[a-f0-9]{64}$ ]] || die 'invalid restricted runtime image identity'
+    IMAGE=$engine_response
 fi
 
 podman_args=(
@@ -251,23 +465,22 @@ podman_args=(
     --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777,size=512m
     --tmpfs /var/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m
     --tmpfs /run:rw,nosuid,nodev,mode=1777,size=32m
-    --tmpfs /codex-home:rw,exec,nosuid,nodev,mode=1777
     --userns=keep-id
-    --user "$(id -u):$(id -g)"
+    --user "$caller_uid:$(id -g)"
     --cap-drop=all --security-opt=no-new-privileges
     "--memory=$memory_bytes" "--cpus=$cpu_text" "--pids-limit=$pids_limit"
     --workdir "$WORKSPACE"
     --env HOME=/codex-home
     --env CODEX_HOME=/codex-home/.codex
     --volume "$workspace_mount:$workspace_mount:rw"
-    --volume "$CODEX_DIR:/codex-home/.codex:rw"
+    "${state_mounts[@]}"
 )
 ((run_timeout == 0)) || podman_args+=(--timeout "$run_timeout")
 if [[ -t 0 && -t 1 ]]; then
     podman_args+=(--tty)
 fi
 
-if [[ "${CODEX_CONTAINER_PODMAN:-}" == 1 ]]; then
+if ((podman_access)); then
     podman_args+=(
         --env CONTAINER_HOST=unix:///run/podman/podman.sock
         --volume "$host_socket:/run/podman/podman.sock:rw"
@@ -275,8 +488,19 @@ if [[ "${CODEX_CONTAINER_PODMAN:-}" == 1 ]]; then
 else
     podman_args+=(--unsetenv CONTAINER_HOST)
 fi
+if ((trust_host_ca)); then
+    podman_args+=(
+        --volume "$ca_bundle:/codex-home/ca/bundle.pem:ro"
+        --env SSL_CERT_FILE=/codex-home/ca/bundle.pem
+        --env REQUESTS_CA_BUNDLE=/codex-home/ca/bundle.pem
+        --env CURL_CA_BUNDLE=/codex-home/ca/bundle.pem
+        --env NODE_EXTRA_CA_CERTS=/codex-home/ca/bundle.pem
+    )
+fi
 
-if ((shell_mode)); then
+if ((qualification_probe)); then
+    codex_args=()  # The shared helper supplies the fixed probe command.
+elif ((shell_mode)); then
     podman_args+=(--entrypoint /bin/bash)
     codex_args=()
 fi
@@ -285,17 +509,22 @@ command -v timeout >/dev/null || die "coreutils timeout is required for bounded 
 container_id=''
 client_pid=''
 session_tmp=''
+session_token=''
 pending_signal=''
 pending_status=0
 attached=0
 creating=0
+qualification_check_pid=''
+session_start_pid=''
+ownership_label=io.codex-container.session
 
 record_signal() {
     if ((pending_status == 0)); then
         pending_signal=$1
         pending_status=$2
     fi
-    if ((attached || creating)) && [[ -n "$client_pid" ]]; then
+    if { ((attached || creating)) && [[ -n "$client_pid" ]]; } \
+        || [[ -n "$qualification_check_pid" || -n "$session_start_pid" ]]; then
         exit "$pending_status"
     fi
 }
@@ -310,13 +539,17 @@ wait_for_create() {
 }
 
 # Consult Bash's child table rather than potentially recycled process IDs.
-client_running() {
-    local child
-    [[ -n "$client_pid" ]] || return 1
-    while IFS= read -r child; do
-        [[ "$child" != "$client_pid" ]] || return 0
+child_running() {
+    local child=$1 running
+    [[ -n "$child" ]] || return 1
+    while IFS= read -r running; do
+        [[ "$running" != "$child" ]] || return 0
     done < <(jobs -p)
     return 1
+}
+
+client_running() {
+    child_running "$client_pid"
 }
 
 wait_for_client_until() {
@@ -343,6 +576,30 @@ reap_client() {
     client_pid=''
 }
 
+# Restricted helpers: TERM, a bounded grace period, then KILL and reap.
+reap_helper() {
+    local child=$1 grace=$2 until
+    child_running "$child" || { wait "$child" 2>/dev/null || true; return 0; }
+    kill -TERM "$child" 2>/dev/null || true
+    until=$((SECONDS + grace))
+    while child_running "$child" && ((SECONDS < until)); do
+        sleep 0.05
+    done
+    if child_running "$child"; then
+        printf 'codex-container: restricted helper %s did not confirm cleanup before the deadline\n' "$child" >&2
+        kill -KILL "$child" 2>/dev/null || true
+    fi
+    until=$((SECONDS + 1))
+    while child_running "$child" && ((SECONDS < until)); do
+        sleep 0.05
+    done
+    if child_running "$child"; then
+        printf 'codex-container: Cannot reap restricted helper %s within deadline; inspect it explicitly\n' "$child" >&2
+    else
+        wait "$child" 2>/dev/null || true
+    fi
+}
+
 recover_container_id() {
     local recovered='' has_nul=0
     [[ -z "$container_id" && -n "$session_tmp" && -s "$session_tmp/cid" ]] || return 0
@@ -357,9 +614,23 @@ recover_container_id() {
 }
 
 cleanup() {
-    local status=$? control_status
+    local status=$? control_status shutdown_deadline
     trap '' TERM INT HUP
     ((pending_status == 0)) || status=$pending_status
+    shutdown_deadline=$((SECONDS + 20))
+    if [[ -n "$qualification_check_pid" ]]; then
+        reap_helper "$qualification_check_pid" 13
+        qualification_check_pid=''
+    fi
+    if [[ -n "$session_start_pid" ]]; then
+        # The session helper owns a separate process group. Reap the whole
+        # group before its leader, including an engine client that ignores TERM.
+        kill -TERM -- "-$session_start_pid" 2>/dev/null || true
+        sleep 0.1
+        kill -KILL -- "-$session_start_pid" 2>/dev/null || true
+        reap_helper "$session_start_pid" 1
+        session_start_pid=''
+    fi
     if ((creating)); then
         if [[ -n "$client_pid" ]]; then
             wait_for_client_until "$((SECONDS + 5))" || true
@@ -386,6 +657,11 @@ cleanup() {
         fi
     fi
     reap_client
+    if [[ "$network_mode" == provider && -n "$session_tmp" ]]; then
+        # Owned proxy recovery/removal and diagnostics share the remaining budget.
+        "${session_helper[@]}" stop --session "$session_tmp" --deadline "$((shutdown_deadline - SECONDS))" \
+            --container "${container_id:-unknown}" || true
+    fi
     [[ -z "$session_tmp" ]] || rm -rf -- "$session_tmp"
     return "$status"
 }
@@ -394,8 +670,65 @@ trap cleanup EXIT
 trap 'record_signal TERM 143' TERM
 trap 'record_signal INT 130' INT
 trap 'record_signal HUP 129' HUP
-session_tmp=$(umask 077; mktemp -d) || die "Cannot create private session bookkeeping directory"
+if [[ "$network_mode" == provider ]]; then
+    session_tmp=$(umask 077; mktemp -d -- "$CODEX_CONTAINER_NETWORK_RUNTIME_DIR/session.XXXXXXXXXXXX") \
+        || die "Cannot create private session directory in CODEX_CONTAINER_NETWORK_RUNTIME_DIR"
+else
+    session_tmp=$(umask 077; mktemp -d) || die "Cannot create private session bookkeeping directory"
+fi
+session_token=${session_tmp##*/}
 ((pending_status == 0)) || exit "$pending_status"
+printf 'codex-container: network mode=%s\n' "$network_mode" >&2
+if [[ "$network_mode" != unrestricted ]] && ((qualification_probe == 0)); then
+    CODEX_CONTAINER_IMAGE="$IMAGE" python3 -I "$script_dir/network/qualify.py" check &
+    qualification_check_pid=$!
+    if wait "$qualification_check_pid"; then
+        qualification_check_pid=''
+    else
+        qualification_status=$?
+        qualification_check_pid=''
+        ((pending_status == 0)) || exit "$pending_status"
+        exit "$qualification_status"
+    fi
+fi
+((pending_status == 0)) || exit "$pending_status"
+if [[ "$network_mode" == provider ]]; then
+    "${session_helper[@]}" start "${network_inputs[@]}" "${qualification_inputs[@]}" --session "$session_tmp" \
+        --guard-digest "$guard_digest" >"$session_tmp/policy.identity" &
+    session_start_pid=$!
+    wait "$session_start_pid"
+    session_start_pid=''
+fi
+((pending_status == 0)) || exit "$pending_status"
+if [[ "$network_mode" != unrestricted ]]; then
+    application=()
+    if ((shell_mode)); then
+        application=(/bin/bash)
+    elif ((qualification_probe == 0)); then
+        application=(/usr/local/bin/codex)
+        if [[ "$network_mode" == provider ]]; then
+            # Protected overrides precede the operator's arguments; -c takes
+            # precedence over the agent-writable config.toml.
+            application+=(-c check_for_update_on_startup=false -c analytics.enabled=false
+                -c feedback.enabled=false -c 'otel.exporter="none"' -c 'otel.trace_exporter="none"'
+                -c 'otel.metrics_exporter="none"' -c features.apps=false -c features.plugins=false
+                -c features.remote_plugin=false -c features.plugin_discovery_prefetch=false)
+        fi
+        application+=("${codex_args[@]}")
+    fi
+    "${session_helper[@]}" agent-args --installation "$script_dir" --mode "$network_mode" \
+        --session "$session_tmp" --guard-digest "$guard_digest" "${qualification_inputs[@]}" \
+        -- "${application[@]}" >"$session_tmp/agent.args"
+    mapfile -d '' -t restricted <"$session_tmp/agent.args"
+    [[ "${restricted[0]:-}" =~ ^[0-9]+$ ]] || die 'invalid restricted session arguments'
+    podman_args+=("${restricted[@]:1:${restricted[0]}}")
+    codex_args=("${restricted[@]:$((1 + restricted[0]))}")
+    # The API key reaches only the API profile; account sessions sign in natively.
+    if [[ "$network_mode" == provider && "$CODEX_CONTAINER_NETWORK_PROFILE" == openai-api \
+        && -n "${OPENAI_API_KEY:-}" ]]; then
+        podman_args+=(--env OPENAI_API_KEY)
+    fi
+fi
 names=$(podman ps --all --format '{{.Names}}') || die "Cannot list Podman containers; check the launch engine"
 ((pending_status == 0)) || exit "$pending_status"
 next_index=0
@@ -412,7 +745,8 @@ for ((attempt=0; attempt<20; attempt++)); do
     name="$container_prefix-$next_index"
     rm -f -- "$session_tmp/cid"
     creating=1
-    podman create --name "$name" --cidfile "$session_tmp/cid" "${podman_args[@]}" "$IMAGE" "${codex_args[@]}" \
+    podman create --name "$name" --cidfile "$session_tmp/cid" --label "$ownership_label=$session_token" \
+        "${podman_args[@]}" "$IMAGE" "${codex_args[@]}" \
         </dev/null >"$session_tmp/output" 2>"$session_tmp/error" &
     client_pid=$!
     create_status=0

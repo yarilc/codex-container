@@ -43,7 +43,7 @@ The wrapper SHALL provide writable temporary storage in `/tmp`, `/var/tmp`, `/ru
 
 ### Requirement: Private persistent state directory
 
-The wrapper SHALL create missing `CODEX_HOME` with user-only permissions, resolve its physical absolute path, and require a directory owned by the caller, accessible for reading, writing, and traversal, with no group/other permission bits. The default SHALL remain `${HOME}/.codex`, and validated state SHALL remain mounted read/write at `/codex-home/.codex` in Codex and shell modes.
+Without `CODEX_CONTAINER_STATE_DIR`, the wrapper SHALL create missing `CODEX_HOME` privately, resolve its physical path, and require caller ownership, read/write/search access and no group/other permission bits. The default SHALL remain `${HOME}/.codex`, and validated state SHALL remain mounted read/write at `/codex-home/.codex` in Codex and shell modes. In restricted modes the validated state directory SHALL be declared writable to the protected-installation checks.
 
 #### Scenario: Create private state
 - **WHEN** the selected state directory is absent on a filesystem enforcing Unix permissions
@@ -69,15 +69,23 @@ The wrapper SHALL create missing `CODEX_HOME` with user-only permissions, resolv
 - **WHEN** `--container-help` is requested with missing or insecure state
 - **THEN** help succeeds without creating, validating, or modifying the state directory
 
+#### Scenario: Protected installation outside state
+- **WHEN** a restricted session starts and the wrapper checkout, guard, policy or profile lies inside the state directory or the workspace
+- **THEN** startup fails before the agent runs
+
 ### Requirement: Document persistent state protection
 
-The README and runtime guidance SHALL explain state privacy checks, the default shared host `~/.codex`, use of a separate `CODEX_HOME`, and migration errors on insecure directories or filesystems. Documentation SHALL distinguish directory access control from encryption and state that writable persistent state remains available to the agent.
+The README and runtime guidance SHALL explain state privacy checks, the default shared host `~/.codex`, use of a separate `CODEX_HOME`, the isolated `CODEX_CONTAINER_STATE_DIR` home and its conflict with `CODEX_HOME`, and migration errors on insecure directories or filesystems. Documentation SHALL distinguish directory access control from encryption and state that writable persistent state remains available to the agent.
 
 #### Scenario: Existing user migrates
 - **WHEN** a user reads the migration instructions
 - **THEN** they find an explicit `chmod 700` correction for their own existing directory and a separate private Linux state example
 - **AND** they learn that changing the state path selects different configuration and sessions without automatic copying
 - **AND** checks on the selected directory do not establish the privacy of every ancestor, ACL, or existing file
+
+#### Scenario: User selects an isolated home
+- **WHEN** a user reads about `CODEX_CONTAINER_STATE_DIR`
+- **THEN** they learn that it replaces the shared `CODEX_HOME`, requires a separate login, and cannot be combined with a host `CODEX_HOME`
 
 ### Requirement: Explicit temporary storage capacities
 
@@ -167,3 +175,30 @@ Wrapper help and the README SHALL document the budget variables with defaults an
 - **THEN** the output lists `CODEX_CONTAINER_MEMORY_LIMIT`, `CODEX_CONTAINER_CPU_LIMIT`, `CODEX_CONTAINER_PIDS_LIMIT`, `CODEX_CONTAINER_RUN_TIMEOUT` and `CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE` with their defaults
 - **AND** it states that capabilities are dropped and budgets do not limit persistent storage
 - **AND** no engine query or state creation occurs
+
+### Requirement: Explicit isolated application home
+A nonempty `CODEX_CONTAINER_STATE_DIR` SHALL select a dedicated writable home mounted at `/codex-home`, containing Codex state, caches and other home data, with `CODEX_HOME=/codex-home/.codex`. The wrapper SHALL NOT mount the shared host `CODEX_HOME` in this mode. A simultaneous nonempty host `CODEX_HOME` SHALL fail with a conflict error before image operations or launch.
+
+#### Scenario: Fresh isolated profile
+- **WHEN** a dedicated state directory is selected and host `CODEX_HOME` is unset or empty
+- **THEN** the container uses `HOME=/codex-home` and `CODEX_HOME=/codex-home/.codex`, with state persisted under the selected directory
+- **AND** no shared host Codex state is mounted or imported
+
+#### Scenario: Conflicting state controls
+- **WHEN** dedicated state and a nonempty host `CODEX_HOME` are both selected
+- **THEN** startup fails before image operations with instructions to select one state mode
+
+#### Scenario: Isolated paths escape the home
+- **WHEN** `.codex` or the CA mount parent inside the isolated home resolves outside it through a symlink
+- **THEN** startup fails before image operations and nothing is created outside the home
+
+#### Scenario: Qualification uses isolated state
+- **WHEN** `--container-qualify` runs its phases
+- **THEN** each phase uses its own disposable isolated state home and never reads or writes the user's `CODEX_HOME`
+
+### Requirement: Isolated home privacy
+The wrapper SHALL create the isolated home and its `.codex` directory privately, resolve the physical path, and require caller ownership, read/write/search access and no group/other permission bits on both. It SHALL NOT repair existing permissions recursively, and SHALL reject filesystems that do not enforce user-only modes.
+
+#### Scenario: Unsafe isolated home
+- **WHEN** the isolated home or its `.codex` has the wrong owner, lacks access or grants group/other access
+- **THEN** startup fails with a path-specific error before image operations, without changing existing permissions

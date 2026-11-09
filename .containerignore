@@ -1,3 +1,8 @@
-# The image currently needs no local COPY/ADD inputs.
+# Admit only explicit runtime build inputs.
 **
 !Containerfile
+!.containerignore
+!network
+network/**
+!network/relay.py
+!network/mux.py
