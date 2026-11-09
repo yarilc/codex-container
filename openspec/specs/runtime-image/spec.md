@@ -1,4 +1,4 @@
-# container-image Specification
+# runtime-image Specification
 
 ## Purpose
 

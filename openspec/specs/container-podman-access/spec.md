@@ -1,4 +1,4 @@
-# podman-access Specification
+# container-podman-access Specification
 
 ## Purpose
 
