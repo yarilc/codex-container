@@ -304,3 +304,15 @@ and session-documentation requirements. All added and modified requirement
 blocks were compared with the delta, preserving unaffected requirements and
 existing scenarios. Strict change validation, all five main specifications,
 Bash syntax, and whitespace checks passed before archival.
+
+## Common specification names: 2026-11-09
+
+The OpenSpec capabilities were renamed to the scheme shared by the five wrappers (Wave 1, `sandbox-ref-2`). Requirements and scenarios are unchanged; only directory names and spec titles changed. Earlier sections and archived changes keep the names that were current at the time.
+
+| Previous name | Current name |
+| --- | --- |
+| `container-image` | `runtime-image` |
+| `podman-access` | `container-podman-access` |
+| `runtime-filesystem` | `container-isolation` |
+
+`openspec validate --specs` passed: 5 specs, 0 failures.
