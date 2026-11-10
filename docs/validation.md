@@ -602,3 +602,19 @@ OpenCode's `.config/opencode`. Codex's `.codex` is unaffected.
 | `python3 -m unittest tests.test_reference_copy` | Passed: 5 tests |
 | `bash tests/run-runtime.sh --shared` | Passed: 142 tests, 27 skipped |
 | `bash tests/run-runtime.sh --setup` | Passed: 63 tests |
+
+## Adoption of `sandbox-ref-6`: 2026-11-10
+
+`claude-container` `sandbox-ref-6` (commit `3150bfe`) adds the optional profile
+field `install.files`: setup installs the declared agent files, the
+qualification identity binds them, and the shared qualification test
+installation copies them with `Containerfile` and `.containerignore`. This
+repository declares none, so its installation is unchanged. The changed shared
+files are copied unchanged and `tests/test_reference_copy.py` moves to the
+tag. The first Codex qualification run had one transient failure in `test_concurrent_gates_publish_complete_atomic_reports`; two reruns passed.
+
+| Check | Result |
+| --- | --- |
+| `--shared` (includes `test_reference_copy.py`) | Passed: 143 tests, 27 skipped (run by the modes) |
+| `--setup` | Passed: 63 tests |
+| `--qualification` | Passed: 18 tests |
