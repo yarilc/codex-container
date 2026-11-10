@@ -589,3 +589,16 @@ are unchanged.
 | `python3 -m unittest tests.test_reference_copy`, with the sibling checkout at the tag | Passed: 5 tests |
 | `bash tests/run-runtime.sh --shared` | Passed: 142 tests, 27 skipped |
 | `bash tests/run-runtime.sh --setup` | Passed: 63 tests |
+
+## Adoption of `sandbox-ref-5`: 2026-11-10
+
+`claude-container` tag `sandbox-ref-5` (commit
+`3388b6ee45a1b9943f8f4aed77c0b1740a9ab4f8`) adds two parent-directory
+creations to `tests/test_setup.py`, for nested configuration homes such as
+OpenCode's `.config/opencode`. Codex's `.codex` is unaffected.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy` | Passed: 5 tests |
+| `bash tests/run-runtime.sh --shared` | Passed: 142 tests, 27 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 63 tests |
