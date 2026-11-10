@@ -575,3 +575,17 @@ updated.
 | `python3 -m unittest tests.test_reference_copy`, with the sibling checkout at the tag | Passed: 5 tests |
 | `bash tests/run-runtime.sh --shared` | Passed: 142 tests, 27 skipped |
 | `bash tests/run-runtime.sh --guard` | Passed: 19 tests, 1 skipped |
+
+## Adoption of `sandbox-ref-4`: 2026-11-10
+
+`claude-container` tag `sandbox-ref-4` (commit
+`49a871b6bee21926112c547bc3a97562c933e6bd`) differs from `sandbox-ref-3` only
+in `tests/test_setup.py`, which now supports API-key-only profiles (OpenCode).
+The Codex profile's first method is the `account` login method, so its checks
+are unchanged.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy`, with the sibling checkout at the tag | Passed: 5 tests |
+| `bash tests/run-runtime.sh --shared` | Passed: 142 tests, 27 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 63 tests |
