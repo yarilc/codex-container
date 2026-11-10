@@ -14,7 +14,7 @@ isolation, delegation and image specifications in `openspec/specs/`.
 ## Reference and intentional differences
 
 The shared components are copied unchanged from `claude-container` at tag
-`sandbox-ref-7` (commit `d52a031ae5f296991d0e3b53e6e61a706b19fa35`):
+`sandbox-ref-8` (commit `12cffab0d248ec48a95f3b1840c573fcebdbb427`):
 
 - `network/` (except the build output `network/bin/`);
 - `setup/`;
@@ -99,8 +99,8 @@ The same row appears in `claude-container/docs/network-contract.md`.
 
 | Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
 | --- | --- | --- | --- | --- |
-| Claude | Reference (`sandbox-ref-7`) | Mandatory bootstrap, multiplexed proxy and guided setup integrated | See the Claude validation record | Account login, reuse and refresh passed; real-key API unavailable |
-| Codex | Ported from `sandbox-ref-7`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Pending operator device-code login, refresh and API-key checks; synthetic Responses API streaming and tool call passed |
+| Claude | Reference (`sandbox-ref-8`) | Mandatory bootstrap, multiplexed proxy and guided setup integrated | See the Claude validation record | Account login, reuse and refresh passed; real-key API unavailable |
+| Codex | Ported from `sandbox-ref-8`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Pending operator device-code login, refresh and API-key checks; synthetic Responses API streaming and tool call passed |
 | Antigravity | Pending (profile-based port planned) | Not assessed | Not assessed | Not assessed |
 | OpenCode | Ported from `sandbox-ref-5`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Pending operator API-key checks for the four profiles; synthetic Chat Completions streaming and tool call passed |
 | Pi | Pending (profile-based port planned) | Not assessed | Not assessed | Not assessed |
