@@ -560,3 +560,18 @@ banner of `codex exec` (no credentials, no model request):
 | `--network` | Passed: 21 tests. The first full run had 1 failure: `test_guarded_arguments_stdin_status_and_tty_both_state_modes` expected the application argv without the new protected `sandbox_mode` override; the per-agent expectation was updated. The synthetic Responses API test now runs `codex exec` through the wrapper without `--sandbox`; the banner reports `sandbox: danger-full-access` and the tool writes its sentinel |
 | `openspec validate add-container-setup --strict`, `git diff --check` | Passed |
 | Parity row | Identical Codex row in this repository and in `claude-container/docs/network-contract.md` (uncommitted there until the archive step) |
+
+## Adoption of `sandbox-ref-3`: 2026-11-10
+
+The OpenCode port found that the shared guard test ran the agent with no
+writable home. `claude-container` fixed `tests/test_guard.py` and tagged
+`sandbox-ref-3` (commit `449ce60f956f0b51ff0e8818819c1377f7902a4d`). The test
+is the only shared file that differs from `sandbox-ref-2`. It was copied here,
+and the manifest, tag and commit in `tests/test_reference_copy.py` were
+updated.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy`, with the sibling checkout at the tag | Passed: 5 tests |
+| `bash tests/run-runtime.sh --shared` | Passed: 142 tests, 27 skipped |
+| `bash tests/run-runtime.sh --guard` | Passed: 19 tests, 1 skipped |

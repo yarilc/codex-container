@@ -15,8 +15,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-REFERENCE_TAG = 'sandbox-ref-2'
-REFERENCE_COMMIT = '56a6f03216c49c78426fc7e9ced96c9fecc12685'
+REFERENCE_TAG = 'sandbox-ref-3'
+REFERENCE_COMMIT = '449ce60f956f0b51ff0e8818819c1377f7902a4d'
 SIBLING = ROOT.parent / 'claude-container'
 # Shared directories whose complete file set is fixed by the manifest.
 CLOSED_DIRECTORIES = ('network', 'setup')
@@ -67,7 +67,7 @@ MANIFEST = {
     'tests/sandbox_profile.py': 'adf6dd51417ec62cf6c2ccc84b8789e41a4f8b8ba46d1be1635d3ab2445fa60e',
     'tests/test_agent_profile.py': '28642e87780cc8ee9302da93fddb0bfac36a96e7c435247354040d863cd48812',
     'tests/test_alignment.py': '4f1e68c087fe95abd34818385d7a12e1f36f86ca0d50e5dbfe57b22724de588c',
-    'tests/test_guard.py': '5caa4066ad05c85c86b564b43bbfedb7eaa5d257bc5de7c65092a67d27ab685b',
+    'tests/test_guard.py': '78c623761899aee82e912888c2c769d86bf55bd445d47dfc2f09d4f5f1484f2c',
     'tests/test_mux.py': 'fb3a7cf8675d247c6609a337d56682d484cde6296e14ea939bfde70537cc8446',
     'tests/test_network_feasibility.py': '4cff9c50b996fd38f2b21b75abe73de77531e554522b04641fcb5288178d1e1c',
     'tests/test_network_policy.py': '27d42ed14dfa0fef9409dd6e9078d9f1215b9a77b9acc76306a852db82e096fc',

@@ -14,7 +14,7 @@ isolation, delegation and image specifications in `openspec/specs/`.
 ## Reference and intentional differences
 
 The shared components are copied unchanged from `claude-container` at tag
-`sandbox-ref-2` (commit `56a6f03216c49c78426fc7e9ced96c9fecc12685`):
+`sandbox-ref-3` (commit `449ce60f956f0b51ff0e8818819c1377f7902a4d`):
 
 - `network/` (except the build output `network/bin/`);
 - `setup/`;
@@ -99,8 +99,8 @@ The same row appears in `claude-container/docs/network-contract.md`.
 
 | Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
 | --- | --- | --- | --- | --- |
-| Claude | Reference (`sandbox-ref-2`) | Mandatory bootstrap, multiplexed proxy and guided setup integrated | See the Claude validation record | Account login, reuse and refresh passed; real-key API unavailable |
-| Codex | Ported from `sandbox-ref-2`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Pending operator device-code login, refresh and API-key checks; synthetic Responses API streaming and tool call passed |
+| Claude | Reference (`sandbox-ref-3`) | Mandatory bootstrap, multiplexed proxy and guided setup integrated | See the Claude validation record | Account login, reuse and refresh passed; real-key API unavailable |
+| Codex | Ported from `sandbox-ref-3`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Pending operator device-code login, refresh and API-key checks; synthetic Responses API streaming and tool call passed |
 | Antigravity | Pending (profile-based port planned) | Not assessed | Not assessed | Not assessed |
 | OpenCode | Pending (profile-based port planned) | Not assessed | Not assessed | Not assessed |
 | Pi | Pending (profile-based port planned) | Not assessed | Not assessed | Not assessed |
