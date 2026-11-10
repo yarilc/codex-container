@@ -16,31 +16,38 @@
   shared code; `agent/policies/default.json` holds the OpenAI provider profiles.
 - `network/` holds the shared restricted-session implementation (guard, proxy,
   relay, policy, platform checks, qualification and the `session.py` helper);
-  `setup/diagnostics.py` is the shared diagnostics filter.
+  `setup/` holds the shared guided setup (`setup.py`, `common.py`, `launch.py`,
+  `smoke.py`) and the `diagnostics.py` stderr filter; `docs/setup.md` documents
+  it.
 
 ## Shared and agent-specific files
 
-`network/`, `setup/diagnostics.py` and the shared tests (`sandbox_profile.py`,
+`network/`, `setup/` and the shared tests listed in `tests/test_alignment.py`
+(`sandbox_profile.py`, `test_alignment.py`, `test_setup.py`,
 `test_agent_profile.py`, `test_network_policy.py`, `test_mux.py`,
 `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`,
 `test_qualification.py`, `test_guard.py`, `test_session.py`,
 `test_network_feasibility.py` and their fixtures) are copied unchanged from
-`claude-container` at tag `sandbox-ref-2`. Never edit them here and never add
-an agent identifier (`codex`, `openai`) to them: fix a defect in
-`claude-container` first, then copy the files again and update the manifest in
+`claude-container` at tag `sandbox-ref-2`. Never edit them here and never add an
+agent identifier (`codex`, `openai`) to them: fix a defect in `claude-container`
+first, then copy the files again and update the manifest in
 `tests/test_reference_copy.py`. Codex values come only from `agent/`, the
 wrapper, `Containerfile`, `.containerignore` and the per-agent tests
 (`test_wrapper.py`, `test_runtime.py`, `test_network_runtime.py`,
-`network_tls_fixture.py`, `test_image_pins.py`, `test_reference_copy.py`,
-`run-runtime.sh`). The wrapper calls `network/session.py` (`prepare`, `start`,
-`agent-args`, `stop`) and never re-implements the restricted lifecycle inline.
+`network_tls_fixture.py`, `test_setup_runtime.py`, `test_image_pins.py`,
+`test_reference_copy.py`, `run-runtime.sh`). `tests/test_alignment.py` enforces
+the identifier scan and wrapper/profile consistency;
+`tests/test_reference_copy.py` enforces byte identity with the tag. The wrapper
+calls `network/session.py` (`prepare`, `start`, `agent-args`, `stop`) and never
+re-implements the restricted lifecycle inline.
 
 ## Build, Test, and Development Commands
 
 Run from the repository root:
 
 ```bash
-export CODEX_CONTAINER_NETWORK=unrestricted   # or offline/provider; always explicit
+bash ./codex-container.sh --container-setup  # Guided setup and managed launcher
+export CODEX_CONTAINER_NETWORK=unrestricted   # direct launches: offline/provider/unrestricted
 CODEX_CONTAINER_MAINTENANCE=1 ./codex-container.sh --container-build  # Build, then start
 ./codex-container.sh                    # Start in the current workspace
 ./codex-container.sh --container-shell # Open Bash in the runtime image
@@ -122,8 +129,12 @@ other inspection errors stop startup. The default-deny `.containerignore`
 permits only the root Containerfile as an application input; future local
 COPY/ADD sources need deliberate inclusion.
 
-Every launch requires a nonempty `CODEX_CONTAINER_NETWORK`; an unset or empty
-mode stops before engine queries or state creation. Every image build,
+Setup is the first step for new users. Every ordinary launch requires a
+nonempty `CODEX_CONTAINER_NETWORK`, explicit or from the managed launcher; an
+unset or empty mode stops with `setup required:` guidance before engine queries
+or state creation. Restricted Codex launches add a protected
+`-c sandbox_mode="danger-full-access"` because Codex's own sandbox cannot start
+under the guard; never weaken the guard to make it work. Every image build,
 including the automatic build of a missing image, requires the exact
 `CODEX_CONTAINER_MAINTENANCE=1`. `offline` and `provider` reject
 `CODEX_CONTAINER_PODMAN=1`, require host Python 3, a same-host Unix rootless
@@ -157,7 +168,8 @@ Run `bash tests/run-runtime.sh --wrapper` for the wrapper suite in a runner
 container (the agent sandbox mounts `/tmp` noexec and cannot bind Unix sockets
 on its workspace), `--shared` for the copied shared suites and
 `tests/test_reference_copy.py`, and `--network-policy`, `--mux`,
-`--network-feasibility`, `--qualification`, `--guard` and `--network` for the
+`--network-feasibility`, `--qualification`, `--guard`, `--network`, `--setup`
+(shared `test_setup.py`) and `--setup-runtime` for the
 real rootless acceptance modes. `--guard` and `--network` need the toolchain
 image `localhost/codex-guard-toolchain:development`; see `network/README.md`.
 Standard-library Python tests live in `tests/`. Run wrapper checks with

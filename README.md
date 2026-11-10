@@ -174,8 +174,31 @@ See also the official
 
 ## Usage
 
-After completing the rootless host setup above, run from the
-repository directory:
+### First run: guided setup
+
+New users start with guided setup, after completing the rootless host setup
+above, from a reviewed checkout and an interactive terminal:
+
+```bash
+bash ./codex-container.sh --container-setup
+```
+
+Setup asks for the network mode (default `provider`), authentication method,
+state, Podman endpoint, delegation, YOLO, worktree scope, budgets, lifetime and
+CA trust. In provider mode it shows the residual-exfiltration notice and needs
+your acknowledgement. It then reviews the choices and the image maintenance it
+will perform, prepares the images and guard, installs a protected release in
+`~/.local/lib/codex-container`, runs qualification and a credential-free smoke
+check, and installs the managed launcher `~/.local/bin/codex-container`. Use
+that command from any workspace; it supplies the saved choices unless you export
+the corresponding variable. Rerun setup to change them; a failed update keeps
+the last working release. For ChatGPT accounts, setup offers
+`codex login --device-auth`. See [docs/setup.md](docs/setup.md).
+
+### Direct operator launches
+
+The wrapper also runs directly with an explicit mode, from the repository
+directory:
 
 ```bash
 chmod +x codex-container.sh
@@ -188,9 +211,10 @@ CODEX_CONTAINER_MAINTENANCE=1 ./codex-container.sh --container-build
 CODEX_YOLO=1 ./codex-container.sh
 ```
 
-Every ordinary launch needs a nonempty `CODEX_CONTAINER_NETWORK`. An unset or
-empty mode stops before any engine call or state creation and names the three
-modes; `unrestricted` keeps the previous networking behavior. Unknown values
+Every ordinary launch needs a nonempty `CODEX_CONTAINER_NETWORK`, explicit or
+supplied by the managed launcher. An unset or empty mode stops with
+`setup required:` guidance before any engine call or state creation;
+`unrestricted` keeps the previous networking behavior. Unknown values
 fail before image operations.
 
 Every image build is maintenance: `--container-build` and the automatic build
@@ -421,7 +445,7 @@ certificate directory is never mounted.
 
 | `CODEX_CONTAINER_NETWORK` | Agent network access | Host Podman delegation |
 | --- | --- | --- |
-| unset or empty | Launch stops before engine calls and state creation | No session |
+| unset or empty | Launch stops with setup guidance before engine calls and state creation | No session |
 | `offline` | Own loopback, pipes and connected socket pairs only | Rejected |
 | `provider` | As offline, plus one preconnected channel to an exact-destination proxy | Rejected |
 | `unrestricted` | Ordinary runtime networking (the previous behavior) | Exact opt-in allowed |
@@ -458,8 +482,9 @@ their denials stop startup and are never disabled by the wrapper.
 Restricted modes run from a protected installation: a copy of this checkout on
 native Linux storage (on WSL, not under `/mnt/<drive>`) whose directories are
 owned by you and not writable by group or others, outside any workspace or
-state directory. Until guided setup arrives, prepare the guard and proxy image
-manually there, under maintenance (see "Operator build inputs" in
+state directory. Guided setup creates such an installation. To prepare one
+manually instead, build the guard and proxy image there under maintenance (see
+"Operator build inputs" in
 [network/README.md](network/README.md)):
 
 ```bash
@@ -559,14 +584,16 @@ provider outside this boundary.
 Codex's command sandbox cannot run under the guard. With Codex 0.167.0 the
 Bubblewrap path needs a Netlink socket to configure loopback in a new network
 namespace, which the guard denies, and the Landlock-only path refuses to run
-without Bubblewrap. Both fail before the command runs. In `offline` and
-`provider`, run Codex with its sandbox disabled, for example
-`--sandbox danger-full-access`, `--yolo` or `CODEX_YOLO=1`; the guard stays the
-enforced boundary: no network beyond the selected mode, no new Unix sockets, no
-capabilities, and a read-only image root. Disabling
-Codex's sandbox never changes the outer guard, network or proxy restrictions.
-`unrestricted` sessions keep Codex's own sandbox working as before. The
-measurement is in [docs/validation.md](docs/validation.md).
+without Bubblewrap. In `offline` and `provider`, the wrapper therefore adds a
+protected `-c sandbox_mode="danger-full-access"` before your arguments, so
+Codex runs commands without its inner sandbox. The guard stays the enforced
+boundary: no network beyond the selected mode, no new Unix sockets, no
+capabilities, and a read-only image root. A `--sandbox` or
+`-c sandbox_mode=...` you pass after it wins as an explicit choice; an inner
+sandbox selected that way fails before the command. `--container-shell` and
+`unrestricted` sessions get no override, and Codex's own sandbox keeps working
+in `unrestricted`. The measurements are in
+[docs/validation.md](docs/validation.md).
 
 ## Mounts and security
 
@@ -702,6 +729,8 @@ bash tests/run-runtime.sh --mux                  # multiplexed relay
 bash tests/run-runtime.sh --network-feasibility  # isolated topology
 bash tests/run-runtime.sh --guard                # static guard (toolchain image)
 bash tests/run-runtime.sh --qualification        # local qualification gate
+bash tests/run-runtime.sh --setup                # shared setup suite
+bash tests/run-runtime.sh --setup-runtime        # real setup acceptance
 bash tests/run-runtime.sh --network              # restricted wrapper acceptance
 ```
 

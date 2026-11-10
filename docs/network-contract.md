@@ -1,10 +1,11 @@
 # Network policy contract
 
-Status: ported by the `add-network-egress` change. Restricted modes are
-implemented and verified with synthetic and real rootless runtime suites; the
-authenticated OpenAI checks are operator-run and recorded separately in
-[the validation record](validation.md). Guided setup and the managed launcher
-follow in `add-container-setup`.
+Status: ported by the `add-network-egress` and `add-container-setup` changes.
+Restricted modes, guided setup and the managed launcher are implemented and
+verified with synthetic and real rootless runtime suites; the authenticated
+OpenAI checks are operator-run and recorded separately in
+[the validation record](validation.md). Setup is described in
+[docs/setup.md](setup.md).
 
 The durable contract is [network-egress](../openspec/specs/network-egress/spec.md),
 with [host-ca-trust](../openspec/specs/host-ca-trust/spec.md) and the session,
@@ -16,14 +17,13 @@ The shared components are copied unchanged from `claude-container` at tag
 `sandbox-ref-2` (commit `56a6f03216c49c78426fc7e9ced96c9fecc12685`):
 
 - `network/` (except the build output `network/bin/`);
-- `setup/diagnostics.py`;
-- the shared tests listed in that tag's `tests/test_alignment.py`, except
-  `test_alignment.py` and `test_setup.py`, which arrive with
-  `add-container-setup`.
+- `setup/`;
+- the shared tests listed in that tag's `tests/test_alignment.py`.
 
+The unchanged `tests/test_alignment.py` fails on a profile identifier (`codex`,
+`openai`) in a shared file and checks the wrapper against the profile.
 `tests/test_reference_copy.py` holds the SHA-256 of every copied file and fails
-on a changed, missing or extra file, or on a profile identifier (`codex`,
-`openai`) in a copied file. A defect in a shared file is fixed in
+on a changed, missing or extra file. A defect in a shared file is fixed in
 `claude-container` first and then copied; this repository never carries a
 fork. [network/README.md](../network/README.md) is part of the copy and
 describes the shared mechanism in agent-neutral terms.
@@ -34,15 +34,15 @@ Intentional differences are limited to per-agent files:
 | --- | --- |
 | `agent/profile.json` | `codex-container`, prefix `CODEX_CONTAINER`, labels `io.codex-container.*`, images `localhost/codex-cli`, `localhost/codex-egress`, `localhost/codex-guard-toolchain`, home `/codex-home`, command `codex`, `CODEX_HOME`, `CODEX_YOLO`, no shared host directories |
 | `agent/policies/default.json` | `openai-api` and `openai-account`, revision `openai-2026-11-09-v1` |
-| `codex-container.sh` | Codex arguments, shared or isolated state layout, executable `/tmp`, `/var/tmp` and `/codex-home`, protected `-c` overrides, API key only for `openai-api`, missing-mode message without setup |
+| `codex-container.sh` | Codex arguments, shared or isolated state layout, executable `/tmp`, `/var/tmp` and `/codex-home`, protected `-c` overrides (including `sandbox_mode="danger-full-access"` in restricted modes), API key only for `openai-api` |
 | `Containerfile`, `.containerignore` | Codex image; copies `network/relay.py` and `network/mux.py` |
-| `tests/test_wrapper.py`, `test_runtime.py`, `test_network_runtime.py`, `network_tls_fixture.py`, `run-runtime.sh`, `test_image_pins.py`, `test_reference_copy.py` | Codex names, synthetic Responses API fixture, OpenAI host inventories |
+| `tests/test_wrapper.py`, `test_runtime.py`, `test_network_runtime.py`, `network_tls_fixture.py`, `test_setup_runtime.py`, `run-runtime.sh`, `test_image_pins.py`, `test_reference_copy.py` | Codex names, synthetic Responses API fixture, OpenAI host inventories |
 
 ## Modes
 
 | Mode | Agent access | Socket delegation |
 | --- | --- | --- |
-| unset or empty | Launch stops before engine calls and state creation | No session |
+| unset or empty | Launch stops with setup guidance before engine calls and state creation | No session |
 | `offline` | Own loopback, pipes and connected socket pairs only | Rejected |
 | `provider` | As offline, plus one preconnected channel to an exact-destination proxy | Rejected |
 | `unrestricted` (explicit only) | Ordinary runtime networking | Exact opt-in allowed |
@@ -93,12 +93,23 @@ disable control; the proxy denies them.
 - Qualification reports are local (`locally-qualified`); the release
   acceptance inventory is empty.
 
+## Five-wrapper parity
+
+The same row appears in `claude-container/docs/network-contract.md`.
+
+| Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
+| --- | --- | --- | --- | --- |
+| Claude | Reference (`sandbox-ref-2`) | Mandatory bootstrap, multiplexed proxy and guided setup integrated | See the Claude validation record | Account login, reuse and refresh passed; real-key API unavailable |
+| Codex | Ported from `sandbox-ref-2`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Pending operator device-code login, refresh and API-key checks; synthetic Responses API streaming and tool call passed |
+| Antigravity | Pending (profile-based port planned) | Not assessed | Not assessed | Not assessed |
+| OpenCode | Pending (profile-based port planned) | Not assessed | Not assessed | Not assessed |
+| Pi | Pending (profile-based port planned) | Not assessed | Not assessed | Not assessed |
+
 ## Port status
 
 | Item | Status |
 | --- | --- |
-| Shared copy and identifier scan | Done (`tests/test_reference_copy.py`) |
-| Shared suites, guard, mux, policy, feasibility, qualification | Passed in the runner; see [validation](validation.md) |
-| Wrapper integration and restricted runtime acceptance | Passed; see [validation](validation.md) |
+| Shared copy, identifier scan and byte identity | Done (`tests/test_alignment.py`, `tests/test_reference_copy.py`) |
+| Shared suites, guard, mux, policy, feasibility, qualification, setup | Passed in the runner; see [validation](validation.md) |
+| Wrapper integration, restricted runtime and setup acceptance | Passed; see [validation](validation.md) |
 | Authenticated OpenAI checks | Operator-run, pending |
-| `test_alignment.py`, `test_setup.py`, guided setup, parity table | `add-container-setup` |

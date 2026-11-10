@@ -120,6 +120,8 @@ elif args[0] in ('kill', 'rm'):
 elif args[0] in ('run', 'start'):
     if os.environ.get('FAKE_CLIENT_IGNORE_TERM'):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    if os.environ.get('FAKE_START_STDERR'):
+        sys.stderr.write(os.environ['FAKE_START_STDERR']); sys.stderr.flush()
     print('mask:' + oct(os.umask(0)))
     if os.environ.get('FAKE_ECHO_INPUT'):
         sys.stdout.write(sys.stdin.read())
@@ -1042,7 +1044,8 @@ reap_client
                     result = subprocess.run(['/bin/bash', str(WRAPPER), *args, '-p', 'x'], cwd=self.project,
                                             env=env, text=True, capture_output=True, timeout=10)
                     self.assertEqual(result.returncode, 1, result.stderr)
-                    self.assertIn('CODEX_CONTAINER_NETWORK is required', result.stderr)
+                    self.assertIn('setup required: run bash ' + str(WRAPPER).replace(' ', '\\ ') + ' --container-setup', result.stderr)
+                    self.assertIn('explicitly set CODEX_CONTAINER_NETWORK', result.stderr)
                     self.assertIn('offline, provider, or unrestricted', result.stderr)
                     self.assertIn('unrestricted keeps the previous networking behavior', result.stderr)
                     self.assertEqual(self.calls(), [])
@@ -1208,8 +1211,9 @@ reap_client
     def test_offline_order_arguments_and_status(self):
         fixture = self.restricted_fixture() | {'CODEX_CONTAINER_NETWORK': 'offline',
                                                'OPENAI_API_KEY': 'synthetic-not-a-real-key'}
-        for flags, yolo, tail in (((), '', ['/usr/local/bin/codex', '-p', 'hello world']),
-                                  ((), '1', ['/usr/local/bin/codex', '--yolo', '-p', 'hello world']),
+        sandbox = ['-c', 'sandbox_mode="danger-full-access"']
+        for flags, yolo, tail in (((), '', ['/usr/local/bin/codex', *sandbox, '-p', 'hello world']),
+                                  ((), '1', ['/usr/local/bin/codex', *sandbox, '--yolo', '-p', 'hello world']),
                                   (('--container-shell',), '1', ['/bin/bash'])):
             with self.subTest(flags=flags, yolo=yolo):
                 result = self.run_wrapper(*flags, '-p', 'hello world', CODEX_YOLO=yolo, FAKE_EXIT='7', **fixture)
@@ -1240,7 +1244,7 @@ reap_client
     def test_provider_order_protected_overrides_and_api_key(self):
         fixture = self.restricted_fixture() | {'CODEX_CONTAINER_NETWORK': 'provider',
                                                'OPENAI_API_KEY': 'synthetic-not-a-real-key'}
-        protected = ['-c', 'check_for_update_on_startup=false', '-c', 'analytics.enabled=false',
+        protected = ['-c', 'sandbox_mode="danger-full-access"', '-c', 'check_for_update_on_startup=false', '-c', 'analytics.enabled=false',
                      '-c', 'feedback.enabled=false', '-c', 'otel.exporter="none"',
                      '-c', 'otel.trace_exporter="none"', '-c', 'otel.metrics_exporter="none"',
                      '-c', 'features.apps=false', '-c', 'features.plugins=false',
@@ -1303,6 +1307,50 @@ reap_client
                     self.assertEqual(len(self.creates()), 1 if stall == 'exec' else 0)
                     self.assertEqual([c[-1] for c in self.calls() if c[0] == 'rm'], ['b' * 64] if stall == 'exec' else [])
                     self.assertEqual(list((self.base / 'runtime').iterdir()), [])
+
+    def test_setup_entry_point_is_dedicated_and_help_takes_precedence(self):
+        for args, message in ((('--container-setup',), 'requires an interactive terminal'),
+                              (('--container-setup', '--container-shell'), 'must be used alone'),
+                              (('-p', 'x', '--container-setup'), 'must be used alone')):
+            with self.subTest(args=args):
+                result = self.run_wrapper(*args, CODEX_CONTAINER_NETWORK='')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('--container-setup ' + message, result.stderr)
+                self.assertEqual(self.calls(), [])
+                self.assertFalse(self.state.exists())
+        for args in (('--container-setup', '--container-help'), ('--container-help', '--container-setup')):
+            result = self.run_wrapper(*args, CODEX_CONTAINER_NETWORK='')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('--container-setup', result.stdout)
+            self.assertIn('New users must first run', result.stdout)
+            self.assertEqual(self.calls(), [])
+
+    def test_client_stderr_passes_through_the_diagnostics_filter(self):
+        restart = 'time="2026-11-09T21:38:10Z" level=error msg="Should restart: false"\n'
+        for status in ('0', '3'):
+            with self.subTest(status=status):
+                result = self.run_wrapper(FAKE_EXIT=status, FAKE_START_STDERR=restart + 'Error: real failure\n')
+                self.assertEqual(result.returncode, int(status), result.stderr)
+                self.assertIn('level=info msg="Should restart: false"', result.stderr)
+                self.assertNotIn('level=error msg="Should restart', result.stderr)
+                self.assertIn('Error: real failure', result.stderr)
+                self.assertIn('mask:', result.stdout)
+        # Without the shared filter the client stderr is passed unchanged.
+        install = self.base / 'no-filter'
+        install.mkdir()
+        self.wrapper = install / 'codex-container.sh'
+        shutil.copyfile(WRAPPER, self.wrapper)
+        result = self.run_wrapper(FAKE_START_STDERR=restart)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('level=error msg="Should restart: false"', result.stderr)
+
+    def test_unrestricted_codex_keeps_its_own_sandbox(self):
+        for yolo in ('', '1'):
+            result = self.run_wrapper('exec', 'x', CODEX_YOLO=yolo)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            create = self.run_args()
+            self.assertFalse(any('sandbox_mode' in a for a in create))
+            self.assertEqual(create[-2:], ['exec', 'x'])
 
     def test_qualification_entry_points(self):
         for args in (('--container-qualify', '--container-shell'), ('-p', 'x', '--container-qualify')):
