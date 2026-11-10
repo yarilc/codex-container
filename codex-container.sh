@@ -24,6 +24,8 @@ Verification expects one launch record or two delegated-socket records, with
 an optional single final LF. Additional records or CR characters are rejected.
 
 Container options:
+  --container-setup      interactively prepare a complete user installation and
+                         its managed launcher; must be used alone
   --container-qualify    verify a prepared restricted installation with fixed
                          local controls; must be used alone
   --container-build      build or refresh the container image before starting
@@ -83,7 +85,14 @@ Environment:
                          workspace with a warning (default: disabled)
   OPENAI_API_KEY         forwarded only to provider sessions using openai-api
 
-Migration: every launch now needs an explicit CODEX_CONTAINER_NETWORK. Set
+New users must first run: bash ./codex-container.sh --container-setup
+Then use the managed launch command printed by setup (by default
+~/.local/bin/codex-container) from your workspace. An ordinary launch with an
+unset or empty CODEX_CONTAINER_NETWORK stops with setup guidance before runtime
+checks or state creation.
+
+Direct operator launches remain available with an explicit mode.
+Migration: every direct launch needs an explicit CODEX_CONTAINER_NETWORK. Set
 CODEX_CONTAINER_NETWORK=unrestricted to keep the previous networking behavior,
 and add CODEX_CONTAINER_MAINTENANCE=1 to commands that build the image, e.g.:
   CODEX_CONTAINER_NETWORK=unrestricted CODEX_CONTAINER_MAINTENANCE=1 bash ./codex-container.sh --container-build
@@ -123,9 +132,9 @@ update checks, analytics, feedback, OTEL export, connectors and remote plugins
 with -c overrides placed before your arguments; the writable config.toml cannot
 override them. ChatGPT browser sign-in is unsupported in the container; use
 "codex login --device-auth" or an API key. Codex's own command sandbox cannot
-run under the guard (it needs Netlink or Bubblewrap); in offline and provider
-modes run Codex with --sandbox danger-full-access or CODEX_YOLO=1, and the
-guard remains the enforced boundary. See network/README.md and
+run under the guard (it needs Netlink or Bubblewrap); offline and provider
+launches add a protected -c sandbox_mode="danger-full-access" before your
+arguments, and the guard remains the enforced boundary. See network/README.md and
 docs/network-contract.md.
 EOF
 }
@@ -143,6 +152,15 @@ for arg in "$@"; do
         script_path=$(readlink -f -- "${BASH_SOURCE[0]}")
         script_dir=$(dirname -- "$script_path")
         exec python3 -I "$script_dir/network/qualify.py" qualify
+    fi
+done
+for arg in "$@"; do
+    if [[ "$arg" == --container-setup ]]; then
+        [[ $# == 1 ]] || die '--container-setup must be used alone'
+        [[ -t 0 && -t 1 ]] || die '--container-setup requires an interactive terminal'
+        command -v python3 >/dev/null || die 'host Python 3 is required for interactive setup'
+        setup_script=$(readlink -f -- "${BASH_SOURCE[0]}")
+        exec python3 -I "$(dirname -- "$setup_script")/setup/setup.py"
     fi
 done
 
@@ -163,10 +181,14 @@ for arg in "$@"; do
     esac
 done
 
-# An explicit mode precedes every other check, engine query and state operation.
-# add-container-setup replaces this message with guided setup.
-[[ -n "${CODEX_CONTAINER_NETWORK:-}" ]] \
-    || die 'CODEX_CONTAINER_NETWORK is required: set offline, provider, or unrestricted (unrestricted keeps the previous networking behavior)'
+# An explicit or managed mode precedes every other check, engine query and
+# state operation. Files in the current directory never supply it.
+if [[ -z "${CODEX_CONTAINER_NETWORK:-}" ]]; then
+    setup_wrapper=${BASH_SOURCE[0]}
+    [[ "$setup_wrapper" == /* ]] || setup_wrapper="$PWD/$setup_wrapper"
+    printf -v setup_command 'bash %q --container-setup' "$setup_wrapper"
+    die "setup required: run $setup_command; use the managed launcher afterward or explicitly set CODEX_CONTAINER_NETWORK for an operator workflow (offline, provider, or unrestricted; unrestricted keeps the previous networking behavior)"
+fi
 
 boolean() {
     case "${2,,}" in
@@ -282,7 +304,7 @@ capture_engine_info() {
     engine_response=${engine_response%$'\n'}
     [[ "$engine_response" != *$'\r'* ]]
 }
-capture_engine_info info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}' || die "Cannot query the launch engine or invalid response; check local rootless Podman or the same-host Unix service"
+capture_engine_info info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}' || die "cannot query Podman or invalid engine response; check local rootless Podman or the same-host Unix service"
 runtime_info=$engine_response
 read -r rootless runtime_os service_remote extra <<< "$runtime_info"
 [[ "$rootless" == true && "$runtime_os" == linux && -z "$extra" && "$runtime_info" != *$'\n'* ]] || die "The launch engine must report Linux rootless operation; check Podman info and run as a non-root user"
@@ -516,6 +538,8 @@ attached=0
 creating=0
 qualification_check_pid=''
 session_start_pid=''
+diagnostics_pid=''
+diagnostics_fd=''
 ownership_label=io.codex-container.session
 
 record_signal() {
@@ -657,6 +681,19 @@ cleanup() {
         fi
     fi
     reap_client
+    if [[ -n "$diagnostics_fd" ]]; then
+        exec {diagnostics_fd}>&-
+        diagnostics_fd=''
+    fi
+    if [[ -n "$diagnostics_pid" ]]; then
+        # Drain the final client output before reaping the stderr filter.
+        drain_until=$((SECONDS + 1))
+        while child_running "$diagnostics_pid" && ((SECONDS < drain_until)); do
+            sleep 0.01
+        done
+        reap_helper "$diagnostics_pid" 1
+        diagnostics_pid=''
+    fi
     if [[ "$network_mode" == provider && -n "$session_tmp" ]]; then
         # Owned proxy recovery/removal and diagnostics share the remaining budget.
         "${session_helper[@]}" stop --session "$session_tmp" --deadline "$((shutdown_deadline - SECONDS))" \
@@ -705,7 +742,10 @@ if [[ "$network_mode" != unrestricted ]]; then
     if ((shell_mode)); then
         application=(/bin/bash)
     elif ((qualification_probe == 0)); then
-        application=(/usr/local/bin/codex)
+        # Codex's own sandbox cannot start under the guard (Bubblewrap needs
+        # Netlink); the guard is the enforced boundary. A later operator
+        # --sandbox or -c sandbox_mode remains an explicit choice.
+        application=(/usr/local/bin/codex -c 'sandbox_mode="danger-full-access"')
         if [[ "$network_mode" == provider ]]; then
             # Protected overrides precede the operator's arguments; -c takes
             # precedence over the agent-writable config.toml.
@@ -785,8 +825,21 @@ configured_budgets=$(timeout --kill-after=1s 10s podman inspect --type container
 # Explicit redirection retains redirected stdin for the background client.
 attached=1
 started_at=$SECONDS
-podman start --attach --interactive --sig-proxy=false "$container_id" <&0 &
-client_pid=$!
+if [[ -f "$script_dir/setup/diagnostics.py" ]] && command -v python3 >/dev/null; then
+    # Optional for unrestricted installs without host Python. Only the exact
+    # successful Podman 4.3 restart-check line changes level; errors pass.
+    mkfifo -- "$session_tmp/diagnostics.pipe"
+    python3 -I "$script_dir/setup/diagnostics.py" <"$session_tmp/diagnostics.pipe" >&2 &
+    diagnostics_pid=$!
+    exec {diagnostics_fd}>"$session_tmp/diagnostics.pipe"
+    podman start --attach --interactive --sig-proxy=false "$container_id" <&0 2>&"$diagnostics_fd" {diagnostics_fd}>&- &
+    client_pid=$!
+    exec {diagnostics_fd}>&-
+    diagnostics_fd=''
+else
+    podman start --attach --interactive --sig-proxy=false "$container_id" <&0 &
+    client_pid=$!
+fi
 if ((pending_status)); then
     exit "$pending_status"
 fi

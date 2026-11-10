@@ -510,3 +510,53 @@ allowlist is never broadened with wildcards.
 | `openspec validate add-network-egress --strict` | Passed |
 | `git diff --check` | Passed |
 | markdownlint (`davidanson/markdownlint-cli2`) | Remaining findings are table and code lines over 80 columns and the existing duplicate "Archive disposition" headings, as in the previous documents |
+
+## Guided setup and restricted sandbox override (`add-container-setup`): 2026-11-09
+
+Reference: `claude-container` tag `sandbox-ref-2`. Environment as in the
+network egress port above.
+
+### `sandbox_mode` override (task 3.1)
+
+Measured with `codex-cli 0.167.0`, a disposable `CODEX_HOME` and the startup
+banner of `codex exec` (no credentials, no model request):
+
+| Input | Effective sandbox |
+| --- | --- |
+| `config.toml` `sandbox_mode = "danger-full-access"` with `--strict-config` | `danger-full-access` (key and value accepted) |
+| `config.toml` `sandbox_mode = "bogus"` | Rejected: ``unknown variant `bogus`, expected one of `read-only`, `workspace-write`, `danger-full-access` `` |
+| `config.toml` `read-only` plus `-c sandbox_mode="danger-full-access"` | `danger-full-access` (the protected override beats the writable file) |
+| `-c sandbox_mode="danger-full-access"` then `exec --sandbox workspace-write` | `workspace-write` (a later operator flag wins) |
+| `-c sandbox_mode="danger-full-access"` then `-c sandbox_mode="read-only"` | `read-only` (the last `-c` wins) |
+
+### Wrapper and shared setup suites (tasks 2.1–2.3, 3.2)
+
+| Check | Result |
+| --- | --- |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 66 tests, adding the setup entry point and help precedence, the diagnostics filter (restart line reclassified to `level=info`, real errors kept, status preserved, unchanged without the filter) and the restricted `sandbox_mode` override |
+| `bash tests/run-runtime.sh --setup` (shared `test_setup.py`) | First run: 6 failures in `test_managed_real_wrapper_admits_saved_modes_and_preserves_network_overrides`, which expects the shared wrapper wording `cannot query Podman`; the Codex wrapper message was aligned (`cannot query Podman or invalid engine response; …`). Rerun: passed, 63 tests. No shared file changed |
+| `test_alignment.py` | Passed: 9 tests (identifier scan, inventory, wrapper/profile consistency, helper calls, no inline lifecycle, neutral paths) |
+| `tests/test_reference_copy.py` | Passed: 56 manifest entries, including `setup/` and the two new shared tests |
+
+### Setup acceptance (tasks 4.1–4.2)
+
+| Check | Result |
+| --- | --- |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests. Provider setup with CA trust, managed `--version` from a fresh environment through the guard (diagnostics filter applied), shell smoke, failed candidate update rolled back, offline rerun, relocated managed command, unrestricted setup and shell. Disposable `HOME`, installation and proxy image; no systemd change, credentials or model request |
+| Provider setup transcript | Driven through a real pseudo-terminal with scripted answers (`tests/test_setup_runtime.py` harness), disposable `HOME`, account method, login declined. Observed: the residual-exfiltration notice naming `auth.openai.com`, `chatgpt.com` and `api.openai.com` with the required acknowledgement; the review of choices with protected profile `openai-account` and reused image IDs (runtime `a7633287…`, toolchain `0b69ba43…`, proxy `13adbfaf…`); the PATH note; the maintenance warning and authorization; guard packaging; `Sandbox qualification: locally-qualified`; `Sandbox: ready`; `Next authentication action: <command> login --device-auth`; `Authentication: pending` |
+| Real systemd user-service activation, real login | Unavailable (not exercised) |
+
+### Final verification (task 5.3)
+
+| Check | Result |
+| --- | --- |
+| `bash -n`, ShellCheck | Passed; only the informational SC2015, SC2054 and SC2329 classes, as before |
+| `--wrapper` | Passed: 67 tests |
+| `--shared` (includes `test_alignment.py`, `test_reference_copy.py`) | Passed: 142 tests, 27 skipped (run by the modes) |
+| `--setup` | Passed: 63 tests |
+| `--setup-runtime` | Passed: 2 tests |
+| `--qualification` | Passed: 18 tests |
+| Default runtime mode | Passed: 14 tests |
+| `--network` | Passed: 21 tests. The first full run had 1 failure: `test_guarded_arguments_stdin_status_and_tty_both_state_modes` expected the application argv without the new protected `sandbox_mode` override; the per-agent expectation was updated. The synthetic Responses API test now runs `codex exec` through the wrapper without `--sandbox`; the banner reports `sandbox: danger-full-access` and the tool writes its sentinel |
+| `openspec validate add-container-setup --strict`, `git diff --check` | Passed |
+| Parity row | Identical Codex row in this repository and in `claude-container/docs/network-contract.md` (uncommitted there until the archive step) |

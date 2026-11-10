@@ -7,11 +7,11 @@ Let the operator select offline, provider-restricted or explicitly unrestricted 
 ## Requirements
 
 ### Requirement: Operator-selected runtime modes
-The wrapper SHALL accept `CODEX_CONTAINER_NETWORK=offline|provider|unrestricted` only from explicit operator configuration. An ordinary launch with an unset or empty mode SHALL stop before engine calls, state creation or image operations. Other values SHALL fail before image operations. Only explicit `unrestricted` SHALL remove the runtime destination boundary. Agent-writable configuration SHALL NOT select or broaden the outer policy.
+The wrapper SHALL accept `CODEX_CONTAINER_NETWORK=offline|provider|unrestricted` only from explicit operator configuration or the validated managed launcher. An ordinary launch with an unset or empty mode SHALL stop before engine calls, state creation or image operations. Other values SHALL fail before image operations. Only explicit `unrestricted` SHALL remove the runtime destination boundary. Agent-writable configuration SHALL NOT select or broaden the outer policy.
 
 #### Scenario: Missing and invalid selection
 - **WHEN** an ordinary invocation leaves the mode unset or empty
-- **THEN** it exits nonzero with a message naming `CODEX_CONTAINER_NETWORK` and its three values, before any engine call or state creation
+- **THEN** it exits nonzero with setup-required guidance naming `--container-setup` and `CODEX_CONTAINER_NETWORK`, before any engine call or state creation
 - **AND** an unknown nonempty mode fails with an invalid-mode diagnostic without image operations or agent startup
 
 #### Scenario: Policy cannot escalate itself
@@ -71,16 +71,24 @@ Restricted sessions SHALL admit native Linux and WSL2 x86_64 installations with 
 - **AND** a policy denial stops preparation without disabling modules, relabeling or adding privileges
 
 ### Requirement: Codex native sandbox under the outer boundary
-Codex's own command sandbox SHALL run nested under the guard, without capabilities and with no-new-privileges, or its required configuration SHALL be documented. Codex sandbox settings SHALL NOT broaden the outer boundary, and the guard SHALL NOT be weakened to accommodate them.
+Because Codex's own command sandbox cannot run under the guard, the wrapper SHALL add a protected `-c sandbox_mode="danger-full-access"` before the user's arguments in `offline` and `provider` Codex launches, and SHALL NOT add it in `unrestricted`. Codex sandbox settings SHALL NOT broaden the outer boundary, and the guard SHALL NOT be weakened to accommodate them.
 
 #### Scenario: Codex runs a command in a restricted session
-- **WHEN** Codex executes a shell command through its native sandbox in offline or provider mode
-- **THEN** the command either runs under both the Codex sandbox and the guard, or fails with documented guidance
+- **WHEN** Codex executes a shell command in offline or provider mode without operator sandbox arguments
+- **THEN** the command runs under the guard with Codex's own sandbox disabled by the protected override
 - **AND** the command has no network or IPC access beyond the selected mode
 
 #### Scenario: Codex sandbox disabled by the agent
 - **WHEN** writable configuration or `--yolo` disables Codex's own sandbox
 - **THEN** the outer guard, network and proxy restrictions remain unchanged
+
+#### Scenario: Operator selects a sandbox explicitly
+- **WHEN** the operator passes `--sandbox` or `-c sandbox_mode=...` after the protected override in a restricted mode
+- **THEN** the operator's value takes effect, and a Codex sandbox that cannot start fails before the command with the guard unchanged
+
+#### Scenario: Unrestricted keeps Codex's sandbox
+- **WHEN** an unrestricted Codex launch starts
+- **THEN** no sandbox override is added and Codex's own sandbox works as before
 
 ### Requirement: External Unix endpoints are denied
 Restricted processes SHALL be unable to connect or explicitly send to unapproved external Unix endpoints through mounts or aliases, including sockets created after startup. Provider mode SHALL keep only one bootstrap-verified preconnected proxy data channel as an external Unix exception; offline SHALL keep none. A socket's presence in a permitted mount SHALL NOT authorize its use.
@@ -422,10 +430,10 @@ All Codex-specific values used by the shared network components SHALL come from 
 - **THEN** ordinary restricted launches are refused with requalification guidance
 
 ### Requirement: Agent-neutral shared sandbox components
-The shared network components, including the compiled guard, SHALL contain no agent identifiers and SHALL stay byte-identical to the reference copies in `claude-container`. In-container paths, the guard name and the multiplex protocol marker SHALL be agent-neutral. Host-visible images, labels, variables and installation paths SHALL come from the profile.
+The shared `network/` and `setup/` components and shared tests, including the compiled guard, SHALL contain no agent identifiers and SHALL stay byte-identical to the reference copies in `claude-container`, checked by the unchanged `tests/test_alignment.py` and the per-agent SHA-256 manifest. In-container paths, the guard name and the multiplex protocol marker SHALL be agent-neutral. Host-visible images, labels, variables and installation paths SHALL come from the profile.
 
 #### Scenario: Shared component contains an agent identifier
-- **WHEN** a shared network file contains an identifier declared by the profile outside the documented allow-list
+- **WHEN** a shared network or setup file contains an identifier declared by the profile outside the documented allow-list
 - **THEN** the credential-free alignment check fails
 
 #### Scenario: Shared component differs from the reference
@@ -474,7 +482,7 @@ Provider help and the network contract SHALL distinguish CONNECT authorization, 
 - **THEN** the ClientHello guarantee, the remaining application-level limits, the renegotiation limitation and the unimplemented interception option are visible
 
 ### Requirement: Evidence and common contract documentation
-Documentation SHALL map N01–N14 and C02–C08 to implementation and acceptance, publish the mode and profile contract, and date and version the endpoint inventories. `docs/validation.md` SHALL separate synthetic enforcement, real-rootless bypass checks and operator-run authenticated checks. Untested checks SHALL be recorded as unavailable, and automated tests SHALL NOT use real credentials.
+Documentation SHALL map N01–N14 and C01–C12 to implementation and acceptance, publish the mode and profile contract and the five-wrapper parity table, and date and version the endpoint inventories. `docs/validation.md` SHALL separate synthetic enforcement, real-rootless bypass checks and operator-run authenticated checks. Untested checks SHALL be recorded as unavailable, and automated tests SHALL NOT use real credentials.
 
 #### Scenario: Provider profile readiness
 - **WHEN** a profile is declared verified for a Codex version
@@ -488,3 +496,7 @@ Documentation SHALL map N01–N14 and C02–C08 to implementation and acceptance
 #### Scenario: User reviews limits
 - **WHEN** a user reads the network documentation
 - **THEN** it explains that allowed services can receive session data, provider-hosted tools are outside local filtering, and runtime filtering does not constrain host-side image pulls or builds
+
+#### Scenario: Parity table
+- **WHEN** a reader compares the five wrappers
+- **THEN** `docs/network-contract.md` here and in `claude-container` show the same Codex row, with authenticated compatibility recorded as pending until the operator checks run

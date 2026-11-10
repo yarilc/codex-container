@@ -618,7 +618,9 @@ sys.exit(37)
             except subprocess.TimeoutExpired as error:
                 self.fail(f'guarded pipe timed out; isolated={bool(state)} stdout={error.stdout!r} stderr={error.stderr!r}')
             self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
-            self.assertEqual(json.loads(result.stdout), {'argv':arguments, 'stdin':'synthetic stdin\n', 'tty':False})
+            # Restricted launches prepend the protected sandbox override.
+            override = ['-c', 'sandbox_mode="danger-full-access"']
+            self.assertEqual(json.loads(result.stdout), {'argv':[*override, *arguments], 'stdin':'synthetic stdin\n', 'tty':False})
             master, slave = pty.openpty()
             try:
                 proc = subprocess.Popen([str(self.wrapper), '--tty-probe'], cwd=self.project, env=environment,
@@ -635,7 +637,7 @@ sys.exit(37)
                     if not data: break
                     output += data
                 records = [json.loads(line) for line in output.decode().splitlines() if line.startswith('{"argv"')]
-                self.assertEqual(records, [{'argv':['--tty-probe'], 'stdin':'', 'tty':True}])
+                self.assertEqual(records, [{'argv':[*override, '--tty-probe'], 'stdin':'', 'tty':True}])
             finally:
                 if slave >= 0: os.close(slave)
                 os.close(master)
@@ -725,21 +727,23 @@ os.execv(real,[real,*args])
         context, environment = self.provider_fixture()
         # The controlled custom profile and fixture CA authorize only this local
         # synthetic API. No account state, real key or external model is involved.
+        # The wrapper's protected override disables Codex's own sandbox, which
+        # cannot start under the guard; the tool still has no Unix sockets.
         provider = ('model_providers.fixture={name="fixture",base_url="https://localhost.localdomain:8443/v1",'
-                    'env_key="OPENAI_API_KEY",wire_api="responses"}')
+                    'wire_api="responses"}')
+        arguments = ['exec', '--skip-git-repo-check', '-c', 'model_provider=fixture', '-c', provider,
+                     '-m', 'fixture-model', 'fixture-tool-operation']
         for state in ('', self.env['CODEX_CONTAINER_STATE_DIR']):
             with self.subTest(state=state):
                 sentinel = self.project / 'codex-tool-sentinel'
                 sentinel.unlink(missing_ok=True)
-                # Codex's own sandbox cannot run under the guard (see the next test); the
-                # guard stays the enforced boundary and the tool still has no Unix sockets.
-                script = ("OPENAI_API_KEY=synthetic-not-a-real-key codex exec --skip-git-repo-check "
-                          "--sandbox danger-full-access -c model_provider=fixture -c '" + provider + "' "
-                          "-m fixture-model fixture-tool-operation </dev/null\n"
-                          "test \"$(cat codex-tool-sentinel)\" = actual-codex-tool-ok\n")
-                result = self.shell(script, **environment, CODEX_CONTAINER_STATE_DIR=state,
-                    CODEX_CONTAINER_TRUST_HOST_CA='1', CODEX_CONTAINER_CA_BUNDLE=str(context / 'cert.pem'))
+                values = environment | {'CODEX_CONTAINER_STATE_DIR': state, 'CODEX_CONTAINER_TRUST_HOST_CA': '1',
+                                        'CODEX_CONTAINER_CA_BUNDLE': str(context / 'cert.pem')}
+                self.ensure_qualification(values)
+                result = subprocess.run([str(self.wrapper), *arguments], cwd=self.project, env=self.env | values,
+                                        input='', text=True, capture_output=True, timeout=60)
                 self.assert_success(result)
+                self.assertIn('sandbox: danger-full-access', result.stdout + result.stderr)
                 self.assertIn('fixture-tool-complete', result.stdout + result.stderr)
                 self.assertEqual(sentinel.read_text(), 'actual-codex-tool-ok')
 
