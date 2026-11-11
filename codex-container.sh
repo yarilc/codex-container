@@ -50,7 +50,9 @@ Environment:
   CODEX_CONTAINER_NETWORK offline, provider, or unrestricted; required for every
                          launch (unrestricted is the previous behavior)
   CODEX_CONTAINER_NETWORK_PROFILE protected provider policy profile name
-                         (openai-api or openai-account)
+                         (openai-api or openai-account; openai-account and
+                         the extension openai-api-docs also allow the OpenAI
+                         documentation MCP at developers.openai.com)
   CODEX_CONTAINER_NETWORK_POLICY absolute operator policy JSON path
   CODEX_CONTAINER_NETWORK_RUNTIME_DIR private native directory at its host path
   CODEX_CONTAINER_EGRESS_IMAGE immutable proxy image ID or registry digest
@@ -84,6 +86,7 @@ Environment:
   CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE exact 1 permits a refused sensitive
                          workspace with a warning (default: disabled)
   OPENAI_API_KEY         forwarded only to provider sessions using openai-api
+                         or openai-api-docs
 
 New users must first run: bash ./codex-container.sh --container-setup
 Then use the managed launch command printed by setup (by default
@@ -124,17 +127,18 @@ installations are distinguished from release-measured acceptance records.
 Provider mode uses an external CONNECT proxy that binds the TLS server name
 (initial and retried ClientHello) to the CONNECT host before forwarding; it
 does not prove exclusive OpenAI application access. Allowed services can receive
-data: an injected agent can send workspace data to an allowed host (api:
-api.openai.com; account: auth.openai.com and chatgpt.com) with an attacker's
-key or account. Only offline removes this. Provider-hosted tools such as web
+data: an injected agent can send workspace data to an allowed host (openai-api:
+api.openai.com; openai-account: auth.openai.com, chatgpt.com and
+developers.openai.com; openai-api-docs adds developers.openai.com) with an attacker's key or account. Only offline removes this. Provider-hosted tools such as web
 search run at the provider, outside this boundary. Provider sessions disable
 update checks, analytics, feedback, OTEL export, connectors and remote plugins
 with -c overrides placed before your arguments; the writable config.toml cannot
 override them. ChatGPT browser sign-in is unsupported in the container; use
 "codex login --device-auth" or an API key. Codex's own command sandbox cannot
 run under the guard (it needs Netlink or Bubblewrap); offline and provider
-launches add a protected -c sandbox_mode="danger-full-access" before your
-arguments, and the guard remains the enforced boundary. See network/README.md and
+launches add a protected --no-daemon and -c sandbox_mode="danger-full-access"
+before your arguments (the shared background server needs a Unix listener the
+guard denies), and the guard remains the enforced boundary. See network/README.md and
 docs/network-contract.md.
 EOF
 }
@@ -745,7 +749,9 @@ if [[ "$network_mode" != unrestricted ]]; then
         # Codex's own sandbox cannot start under the guard (Bubblewrap needs
         # Netlink); the guard is the enforced boundary. A later operator
         # --sandbox or -c sandbox_mode remains an explicit choice.
-        application=(/usr/local/bin/codex -c 'sandbox_mode="danger-full-access"')
+        # The shared background server needs a Unix listener the guard denies;
+        # --no-daemon runs Codex embedded without its startup warning.
+        application=(/usr/local/bin/codex --no-daemon -c 'sandbox_mode="danger-full-access"')
         if [[ "$network_mode" == provider ]]; then
             # Protected overrides precede the operator's arguments; -c takes
             # precedence over the agent-writable config.toml.
@@ -763,9 +769,9 @@ if [[ "$network_mode" != unrestricted ]]; then
     [[ "${restricted[0]:-}" =~ ^[0-9]+$ ]] || die 'invalid restricted session arguments'
     podman_args+=("${restricted[@]:1:${restricted[0]}}")
     codex_args=("${restricted[@]:$((1 + restricted[0]))}")
-    # The API key reaches only the API profile; account sessions sign in natively.
-    if [[ "$network_mode" == provider && "$CODEX_CONTAINER_NETWORK_PROFILE" == openai-api \
-        && -n "${OPENAI_API_KEY:-}" ]]; then
+    # The API key reaches only the API profiles; account sessions sign in natively.
+    if [[ "$network_mode" == provider && ( "$CODEX_CONTAINER_NETWORK_PROFILE" == openai-api \
+        || "$CODEX_CONTAINER_NETWORK_PROFILE" == openai-api-docs ) && -n "${OPENAI_API_KEY:-}" ]]; then
         podman_args+=(--env OPENAI_API_KEY)
     fi
 fi

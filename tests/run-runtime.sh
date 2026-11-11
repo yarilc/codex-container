@@ -47,6 +47,8 @@ native_root=$(podman volume inspect --format '{{.Mountpoint}}' "$volume")
 if [[ -n "$pattern" ]]; then
     selection=(discover -s tests -p "$pattern" -v)
     runtime_environment=(--env CODEX_RUNTIME_TESTS=1 --env SANDBOX_RUNTIME_TESTS=1)
+    # Opt-in checks that contact a real external service (no credentials).
+    [[ "${SANDBOX_EXTERNAL_TESTS:-}" != 1 ]] || runtime_environment+=(--env SANDBOX_EXTERNAL_TESTS=1)
 else
     selection=(-v "${shared[@]/#/tests.}")
     runtime_environment=()

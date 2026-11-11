@@ -1084,7 +1084,7 @@ reap_client
                      'CODEX_CONTAINER_EGRESS_IMAGE', 'CODEX_CONTAINER_MAINTENANCE', 'CODEX_CONTAINER_STATE_DIR',
                      'CODEX_CONTAINER_TRUST_HOST_CA', 'CODEX_CONTAINER_CA_BUNDLE', 'OPENAI_API_KEY',
                      'CODEX_CONTAINER_NETWORK=unrestricted to keep the previous networking behavior',
-                     'api.openai.com', 'auth.openai.com and chatgpt.com', 'Only offline removes this',
+                     'api.openai.com', 'auth.openai.com, chatgpt.com and', 'Only offline removes this',
                      'codex login --device-auth', 'outside this boundary'):
             self.assertIn(text, result.stdout)
         self.assertEqual(self.calls(), [])
@@ -1211,7 +1211,7 @@ reap_client
     def test_offline_order_arguments_and_status(self):
         fixture = self.restricted_fixture() | {'CODEX_CONTAINER_NETWORK': 'offline',
                                                'OPENAI_API_KEY': 'synthetic-not-a-real-key'}
-        sandbox = ['-c', 'sandbox_mode="danger-full-access"']
+        sandbox = ['--no-daemon', '-c', 'sandbox_mode="danger-full-access"']
         for flags, yolo, tail in (((), '', ['/usr/local/bin/codex', *sandbox, '-p', 'hello world']),
                                   ((), '1', ['/usr/local/bin/codex', *sandbox, '--yolo', '-p', 'hello world']),
                                   (('--container-shell',), '1', ['/bin/bash'])):
@@ -1244,13 +1244,14 @@ reap_client
     def test_provider_order_protected_overrides_and_api_key(self):
         fixture = self.restricted_fixture() | {'CODEX_CONTAINER_NETWORK': 'provider',
                                                'OPENAI_API_KEY': 'synthetic-not-a-real-key'}
-        protected = ['-c', 'sandbox_mode="danger-full-access"', '-c', 'check_for_update_on_startup=false', '-c', 'analytics.enabled=false',
+        protected = ['--no-daemon', '-c', 'sandbox_mode="danger-full-access"', '-c', 'check_for_update_on_startup=false', '-c', 'analytics.enabled=false',
                      '-c', 'feedback.enabled=false', '-c', 'otel.exporter="none"',
                      '-c', 'otel.trace_exporter="none"', '-c', 'otel.metrics_exporter="none"',
                      '-c', 'features.apps=false', '-c', 'features.plugins=false',
                      '-c', 'features.remote_plugin=false', '-c', 'features.plugin_discovery_prefetch=false']
         relay = ['/usr/bin/python3', '-I', '/opt/sandbox-egress/relay.py']
-        for profile, yolo in (('openai-api', ''), ('openai-account', '1'), ('custom-api', '')):
+        for profile, yolo in (('openai-api', ''), ('openai-account', '1'), ('custom-api', ''),
+                              ('openai-api-docs', '1')):
             with self.subTest(profile=profile, yolo=yolo):
                 result = self.run_wrapper('-c', 'analytics.enabled=true', 'exec', 'x', **(fixture | {
                     'FAKE_EXIT': '5', 'CODEX_YOLO': yolo, 'CODEX_CONTAINER_NETWORK_PROFILE': profile}))
@@ -1270,12 +1271,26 @@ reap_client
                 expected = ['--provider', '--', *relay, '/usr/local/bin/codex', *protected,
                             *(['--yolo'] if yolo else []), *user]
                 self.assertEqual(tail, expected)
-                self.assertEqual('OPENAI_API_KEY' in agent, profile == 'openai-api')
+                self.assertEqual('OPENAI_API_KEY' in agent, profile in ('openai-api', 'openai-api-docs'))
                 self.assertEqual([c[-1] for c in self.calls() if c[0] == 'rm'], ['a' * 64, 'b' * 64])
         result = self.run_wrapper('--container-shell', CODEX_YOLO='1', **fixture)
         self.assertEqual(result.returncode, 0, result.stderr)
         agent = self.creates()[1]
         self.assertEqual(agent[agent.index('d' * 64) + 1:], ['--provider', '--', *relay, '/bin/bash'])
+
+    def test_api_key_follows_the_policy_authentication_method(self):
+        # Every shipped profile whose policy authentication is the API-key method
+        # forwards OPENAI_API_KEY; every other profile does not.
+        policy = json.loads((ROOT / 'agent/policies/default.json').read_text())
+        text = WRAPPER.read_text()
+        start = text.index('# The API key reaches only the API profiles')
+        condition = text[start:text.index('podman_args+=(--env OPENAI_API_KEY)', start)]
+        for name, profile in policy['profiles'].items():
+            with self.subTest(profile=name):
+                self.assertEqual(f'== {name} ' in condition, profile['authentication'] == 'api')
+        help_text = self.run_wrapper('--container-help').stdout
+        for name in ('openai-api-docs', 'developers.openai.com', '--no-daemon'):
+            self.assertIn(name, help_text)
 
     def test_failed_qualification_stops_before_session_resources(self):
         for mode in ('offline', 'provider'):
@@ -1350,6 +1365,7 @@ reap_client
             self.assertEqual(result.returncode, 0, result.stderr)
             create = self.run_args()
             self.assertFalse(any('sandbox_mode' in a for a in create))
+            self.assertNotIn('--no-daemon', create)
             self.assertEqual(create[-2:], ['exec', 'x'])
 
     def test_qualification_entry_points(self):

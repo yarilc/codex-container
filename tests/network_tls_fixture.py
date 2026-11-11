@@ -16,7 +16,8 @@ import proxy
 # A deterministic test resolver supplies only the policy's explicit loopback
 # exception. Production proxy resolution/address validation still runs in full.
 # Provider hosts, including denied optional ones, resolve to the local fixture.
-ACCOUNT_HOSTS = ('api.openai.com', 'auth.openai.com', 'chatgpt.com', 'ab.chatgpt.com', 'platform.openai.com')
+ACCOUNT_HOSTS = ('api.openai.com', 'auth.openai.com', 'chatgpt.com', 'ab.chatgpt.com', 'platform.openai.com',
+                 'developers.openai.com', 'mcp.example.com')
 original_resolver = socket.getaddrinfo
 def fixture_resolver(host, port, *args, **kwargs):
     return original_resolver('127.0.0.1' if host in ('localhost.localdomain', 'alternate.test', *ACCOUNT_HOSTS) else host,

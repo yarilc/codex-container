@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "revision": "openai-2026-11-09-v1",
+  "revision": "openai-2026-11-11-v1",
   "source_date": "2026-11-09",
-  "sources": ["https://learn.chatgpt.com/docs/auth"],
+  "sources": ["https://learn.chatgpt.com/docs/auth", "https://developers.openai.com/mcp"],
   "tested": {
-    "cli": "0.167.0 (version query; static endpoint inventory 2026-11-09)",
+    "cli": "0.167.0 (version query; static inventory 2026-11-09; documentation MCP measured 2026-11-10)",
     "node": "22.23.4 (version query only)",
     "authentication": "unverified: operator API key and ChatGPT device-code sign-in, request and refresh not yet run"
   },
@@ -19,7 +19,16 @@
       "disable_optional_traffic": true,
       "destinations": [
         {"host": "auth.openai.com", "port": 443},
-        {"host": "chatgpt.com", "port": 443}
+        {"host": "chatgpt.com", "port": 443},
+        {"host": "developers.openai.com", "port": 443}
+      ]
+    },
+    "openai-api-docs": {
+      "authentication": "api",
+      "disable_optional_traffic": true,
+      "destinations": [
+        {"host": "api.openai.com", "port": 443},
+        {"host": "developers.openai.com", "port": 443}
       ]
     }
   }

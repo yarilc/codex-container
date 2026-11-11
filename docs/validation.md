@@ -659,3 +659,77 @@ unaffected: its methods keep their current setup behavior.
 | --- | --- |
 | `bash tests/run-runtime.sh --shared` | Passed: 145 tests, 27 skipped (run by the modes) |
 | `bash tests/run-runtime.sh --setup` | Passed: 65 tests |
+
+## OpenAI documentation MCP extension profiles (`add-openai-docs-profile`): 2026-11-10
+
+An operator test in provider mode showed the OpenAI documentation MCP server
+(`codex mcp add openaiDeveloperDocs --url https://developers.openai.com/mcp`)
+failing with `error sending request for url
+(https://developers.openai.com/mcp?source=codex)`: the host is in no profile,
+so the proxy denied it. The operator chose to allow it explicitly. Base
+profiles are exact in the shared policy code, so the host is in two new
+extension profiles, `openai-api-docs` and `openai-account-docs`, under policy
+revision `openai-2026-11-10-v1`.
+
+The same test showed `Running without the shared background server:
+command-line configuration overrides (-c, --enable, --disable, or --search)
+requires embedded mode.` This is expected: the protected `-c` overrides select
+embedded mode, and the shared background server needs a Unix listener that the
+guard denies. It is now documented in the README.
+
+### Measurement (Codex 0.167.0, logging CONNECT proxy, dummy key)
+
+| Check | Result |
+| --- | --- |
+| MCP client and `HTTPS_PROXY` | Honored: every MCP connection used the proxy |
+| CONNECT authorities for the MCP server | Only `developers.openai.com:443` (5 tunnels for `codex mcp list` plus `codex exec`; 2 for `codex mcp list` alone) |
+| Other hosts seen, denied, not needed by the MCP | `api.openai.com` (model, dummy key), `chatgpt.com`, `github.com`, `api.github.com` |
+| Real check through the production proxy (`SANDBOX_EXTERNAL_TESTS=1`, no credentials) | `openai-account-docs`: `codex mcp list` reached the server (auth status `Unsupported`, no denial). `openai-account`: auth status `Unknown` and a sanitized `policy-denied` entry for `developers.openai.com` |
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| Policy against the profile rules, `--network-policy`, `test_agent_profile` | Passed (14 policy tests) |
+| `--wrapper` | Passed: 68 tests, including key forwarding for every `api` profile and the help text |
+| `--shared` | Passed: 145 tests, 27 skipped |
+| `--network` targeted: controlled `-docs` profiles bind and deny correctly | Passed: 2 tests (documentation host allowed only under `-docs`; `mcp.example.com` and `ab.chatgpt.com` still denied) |
+| ShellCheck | 11 findings, all present before this change; none new |
+| `--network` (full) | Passed: 23 tests, 1 skipped (the opt-in real MCP check, run separately above) |
+| markdownlint | Only MD013 on table rows, as in the existing tables |
+| `openspec validate add-openai-docs-profile --strict`, `git diff --check` | Valid, clean |
+
+## Quiet restricted defaults (`quiet-codex-defaults`): 2026-11-11
+
+The operator asked for a quiet, useful default restricted session. Restricted
+launches now pass a protected `--no-daemon` before the protected `-c`
+overrides, and `openai-account` includes `developers.openai.com:443` for the
+OpenAI documentation MCP. `openai-account-docs` is removed; `openai-api` and
+`openai-api-docs` are unchanged. Policy revision `openai-2026-11-11-v1`;
+existing provider installations requalify once.
+
+### Measurement (Codex 0.167.0, PTY, `--network=none`, dummy key)
+
+| Check | Result |
+| --- | --- |
+| TUI with the protected `-c` overrides, without `--no-daemon` | F2 panel: `Warnings · 1 of 1 · Startup: Running without the shared background server…` |
+| Same, with `--no-daemon` | F2 panel: `No warnings` |
+| `--no-daemon` before `exec`, `login --help`, `mcp list` | Accepted (exit 0) |
+| Offline TUI through the qualified wrapper (disposable state, synthetic `auth.json`) | Codex started; F2 panel `No warnings`; no notice in the output |
+| `codex mcp list` through the wrapper (offline) | Exit 0, no notice |
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| `--wrapper` | Passed: 68 tests (`--no-daemon` first protected argument, absent in shell and `unrestricted`; key forwarding per policy `authentication`) |
+| `--shared` | Passed: 145 tests, 27 skipped |
+| `--network-policy` | Passed: 14 tests |
+| `--network` with `SANDBOX_EXTERNAL_TESTS=1` | Passed: 23 tests. Real check: `openai-account` reached the documentation MCP (auth status `Unsupported`, no denial); `openai-api` denied `developers.openai.com` (`policy-denied`) |
+| `bash -n`, ShellCheck | Clean syntax; same findings as before the change, none new |
+| markdownlint, `git diff --check` | Only MD013 on table rows, as in the existing tables; clean |
+| `openspec validate quiet-codex-defaults --strict` | Valid |
+
+A repeated `--network` run under load once failed the lifetime test
+(`test_agent_budgets_are_effective_and_lifetime_cleans_owned_proxy`, exit 255
+without the lifetime notice); it passed in the full runs before and after.
