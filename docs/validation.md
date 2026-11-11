@@ -733,3 +733,25 @@ existing provider installations requalify once.
 A repeated `--network` run under load once failed the lifetime test
 (`test_agent_budgets_are_effective_and_lifetime_cleans_owned_proxy`, exit 255
 without the lifetime notice); it passed in the full runs before and after.
+
+## Adoption of `sandbox-ref-10`: 2026-11-11
+
+Copied from `claude-container` tag `sandbox-ref-10` (commit `0f6585f`):
+
+- `network/agent_profile.py`, `setup/common.py`, `setup/setup.py`;
+- `tests/test_agent_profile.py`, `tests/test_setup.py`.
+
+The `tests/test_reference_copy.py` manifest moved to the tag. Codex has no
+shared directories, so the profile keeps the default
+`native.private_shared_dirs: false`. A failed setup smoke launch now shows the
+wrapper's sanitized stderr.
+
+| Check | Result |
+| --- | --- |
+| `bash tests/run-runtime.sh --shared` | Passed: 146 tests, 27 skipped (run by the modes) |
+| `bash tests/run-runtime.sh --setup` | Passed: 68 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --wrapper` | 68 tests; 66 passed. `test_permanently_stalled_creation_signal_matrix` failed in 2 subtests on `elapsed > 3` (2.6 to 2.9 s), also when run alone and on `main` without this adoption. The wrapper and `test_wrapper.py` are unchanged; this is recorded as an environment timing issue after the host crash, not a regression |
+
+A first run of all wrappers' suites was interrupted by a host crash. Its
+leftover test containers were removed before this run.
