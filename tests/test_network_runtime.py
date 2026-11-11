@@ -217,7 +217,8 @@ left.close(); right.close()
                     '--user', f'{os.getuid()}:{os.getgid()}', '--volume', f'{context}:/fixture:rw',
                     '--entrypoint', 'openssl', IMAGE, 'req', '-x509', '-newkey', 'rsa:2048',
                     '-nodes', '-days', '1', '-subj', '/CN=localhost.localdomain', '-addext',
-                    'subjectAltName=DNS:localhost.localdomain,DNS:alternate.test,DNS:api.openai.com,DNS:auth.openai.com,DNS:chatgpt.com,DNS:ab.chatgpt.com,DNS:platform.openai.com',
+                    'subjectAltName=DNS:localhost.localdomain,DNS:alternate.test,DNS:api.openai.com,DNS:auth.openai.com,DNS:chatgpt.com,DNS:ab.chatgpt.com,DNS:platform.openai.com,'
+                    'DNS:developers.openai.com,DNS:mcp.example.com',
                     # Codex's rustls verifier rejects a CA certificate used as the server certificate.
                     '-addext', 'basicConstraints=critical,CA:FALSE', '-addext', 'extendedKeyUsage=serverAuth',
                     '-keyout', '/fixture/key.pem',
@@ -233,11 +234,11 @@ left.close(); right.close()
         value = json.loads((ROOT / 'agent/policies/default.json').read_text())
         value['profiles']['controlled-test'] = {'authentication': 'custom', 'disable_optional_traffic': True,
             'destinations': [{'host': 'localhost.localdomain', 'port': 8443, 'addresses': ['127.0.0.1', '::1']}]}
-        for authentication in ('api', 'account'):
-            profile = json.loads(json.dumps(value['profiles']['openai-' + authentication]))
+        for name in ('api', 'account', 'api-docs'):
+            profile = json.loads(json.dumps(value['profiles']['openai-' + name]))
             for destination in profile['destinations']:
                 destination['addresses'] = ['127.0.0.1']
-            value['profiles']['controlled-' + authentication] = profile
+            value['profiles']['controlled-' + name] = profile
         policy_file = self.install / 'test-policy.json'
         policy_file.write_text(json.dumps(value))
         shutil.copyfile(context / 'cert.pem', self.project / 'cert.pem')
@@ -260,7 +261,7 @@ left.close(); right.close()
         shutil.copyfile(ROOT / 'tests/tls_binding_fixture.py', self.project / 'binding.py')
         for profile, hosts in (('controlled-test', 'localhost.localdomain'),
                                ('controlled-api', 'api.openai.com'),
-                               ('controlled-account', 'auth.openai.com,chatgpt.com')):
+                               ('controlled-account', 'auth.openai.com,chatgpt.com,developers.openai.com')):
             result = self.shell('python3 binding.py ' + hosts + '\n', **(environment | {
                 'CODEX_CONTAINER_NETWORK_PROFILE': profile}))
             self.assert_success(result)
@@ -282,6 +283,68 @@ PY
         self.assertIn('removed-account-hosts-denied', result.stdout)
         self.assertIn('policy-denied', result.stderr)
         self.assertIn('ab.chatgpt.com', result.stderr)
+
+    def test_documentation_mcp_host_only_with_account_and_api_docs(self):
+        _, environment = self.provider_fixture()
+        shutil.copyfile(ROOT / 'tests/tls_binding_fixture.py', self.project / 'binding.py')
+        for profile, hosts in (('controlled-api-docs', 'api.openai.com,developers.openai.com'),
+                               ('controlled-account', 'auth.openai.com,chatgpt.com,developers.openai.com')):
+            result = self.shell('python3 binding.py ' + hosts + '\n', **(environment | {
+                'CODEX_CONTAINER_NETWORK_PROFILE': profile}))
+            self.assert_success(result)
+            self.assertIn('tls-destination-binding-ok', result.stdout)
+        denial = """python3 - <<'PY'
+import socket, sys
+for host in sys.argv[1:] or %s:
+    connection = socket.create_connection(('127.0.0.1', 18080), 5)
+    connection.sendall(('CONNECT ' + host + ':443 HTTP/1.1\\r\\n\\r\\n').encode())
+    response = connection.recv(64)
+    assert not response.startswith(b'HTTP/1.1 200'), (host, response)
+    connection.close()
+print('hosts-denied')
+PY
+"""
+        # The documentation host is denied under the exact API profile, and other
+        # MCP-like hosts stay denied under the profiles that admit it.
+        for profile, hosts in (('controlled-api', ('developers.openai.com',)),
+                               ('controlled-account', ('mcp.example.com', 'ab.chatgpt.com')),
+                               ('controlled-api-docs', ('mcp.example.com', 'chatgpt.com'))):
+            result = self.shell(denial % (hosts,), **(environment | {'CODEX_CONTAINER_NETWORK_PROFILE': profile}))
+            self.assert_success(result)
+            self.assertIn('hosts-denied', result.stdout)
+            self.assertIn('policy-denied', result.stderr)
+            self.assertIn(hosts[0], result.stderr)
+
+    @unittest.skipUnless(os.environ.get('SANDBOX_EXTERNAL_TESTS') == '1',
+                         'contacts developers.openai.com; set SANDBOX_EXTERNAL_TESTS=1')
+    def test_real_documentation_mcp_through_the_production_proxy(self):
+        # Credential-free: `codex mcp list` probes the server without a model call.
+        proxy_tag = 'localhost/codex-egress-test-' + uuid.uuid4().hex
+        self.addCleanup(self.podman, 'rmi', '--force', proxy_tag)
+        self.podman('build', '--pull=never', '--tag', proxy_tag, '--file',
+                    str(ROOT / 'network/Containerfile'), str(ROOT / 'network'))
+        proxy_id = self.podman('image', 'inspect', '--format', '{{.Id}}', proxy_tag)
+        policy_file = self.install / 'real-policy.json'
+        shutil.copyfile(ROOT / 'agent/policies/default.json', policy_file)
+        policy_file.chmod(0o600)
+        state = self.base / 'mcp-state'
+        (state / '.codex').mkdir(parents=True, mode=0o700)
+        state.chmod(0o700)
+        (state / '.codex/config.toml').write_text(
+            '[mcp_servers.openaiDeveloperDocs]\nurl = "https://developers.openai.com/mcp"\n')
+        environment = {'CODEX_CONTAINER_NETWORK': 'provider', 'CODEX_CONTAINER_NETWORK_POLICY': str(policy_file),
+                       'CODEX_CONTAINER_EGRESS_IMAGE': proxy_id, 'CODEX_CONTAINER_STATE_DIR': str(state)}
+        results = {}
+        for profile in ('openai-account', 'openai-api'):
+            result = self.shell('codex mcp list </dev/null || true\n',
+                                **(environment | {'CODEX_CONTAINER_NETWORK_PROFILE': profile}))
+            self.assert_success(result)
+            results[profile] = result
+            print(f'documentation MCP under {profile}:', result.stdout.strip().splitlines()[-1:],
+                  'denied' if 'developers.openai.com' in result.stderr else 'not denied', flush=True)
+        self.assertNotIn('developers.openai.com', results['openai-account'].stderr)
+        self.assertIn('policy-denied', results['openai-api'].stderr)
+        self.assertIn('developers.openai.com', results['openai-api'].stderr)
 
     def test_provider_uses_real_proxy_and_cleans_resources(self):
         context, environment = self.provider_fixture()
@@ -619,7 +682,7 @@ sys.exit(37)
                 self.fail(f'guarded pipe timed out; isolated={bool(state)} stdout={error.stdout!r} stderr={error.stderr!r}')
             self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
             # Restricted launches prepend the protected sandbox override.
-            override = ['-c', 'sandbox_mode="danger-full-access"']
+            override = ['--no-daemon', '-c', 'sandbox_mode="danger-full-access"']
             self.assertEqual(json.loads(result.stdout), {'argv':[*override, *arguments], 'stdin':'synthetic stdin\n', 'tty':False})
             master, slave = pty.openpty()
             try:

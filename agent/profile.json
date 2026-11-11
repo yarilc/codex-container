@@ -26,7 +26,7 @@
     "account": {
       "description": "reuses ChatGPT account sign-in with device code login",
       "policy_profile": "openai-account",
-      "hosts": ["auth.openai.com", "chatgpt.com"],
+      "hosts": ["auth.openai.com", "chatgpt.com", "developers.openai.com"],
       "login_args": ["login", "--device-auth"]
     },
     "api": {

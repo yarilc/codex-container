@@ -71,7 +71,7 @@ Restricted sessions SHALL admit native Linux and WSL2 x86_64 installations with 
 - **AND** a policy denial stops preparation without disabling modules, relabeling or adding privileges
 
 ### Requirement: Codex native sandbox under the outer boundary
-Because Codex's own command sandbox cannot run under the guard, the wrapper SHALL add a protected `-c sandbox_mode="danger-full-access"` before the user's arguments in `offline` and `provider` Codex launches, and SHALL NOT add it in `unrestricted`. Codex sandbox settings SHALL NOT broaden the outer boundary, and the guard SHALL NOT be weakened to accommodate them.
+Because Codex's own command sandbox cannot run under the guard, the wrapper SHALL add a protected `-c sandbox_mode="danger-full-access"` before the user's arguments in `offline` and `provider` Codex launches, and SHALL NOT add it in `unrestricted`. Because Codex's shared background server needs a Unix listener that the guard denies, those launches SHALL also add a protected `--no-daemon` before the overrides. Codex sandbox settings SHALL NOT broaden the outer boundary or weaken the guard.
 
 #### Scenario: Codex runs a command in a restricted session
 - **WHEN** Codex executes a shell command in offline or provider mode without operator sandbox arguments
@@ -88,7 +88,11 @@ Because Codex's own command sandbox cannot run under the guard, the wrapper SHAL
 
 #### Scenario: Unrestricted keeps Codex's sandbox
 - **WHEN** an unrestricted Codex launch starts
-- **THEN** no sandbox override is added and Codex's own sandbox works as before
+- **THEN** no sandbox override and no `--no-daemon` are added, and Codex's own sandbox works as before
+
+#### Scenario: Restricted launch without the embedded-mode notice
+- **WHEN** Codex starts in offline or provider mode, interactively or with a subcommand such as `exec`, `login` or `mcp`
+- **THEN** it runs embedded without printing `Running without the shared background server`
 
 ### Requirement: External Unix endpoints are denied
 Restricted processes SHALL be unable to connect or explicitly send to unapproved external Unix endpoints through mounts or aliases, including sockets created after startup. Provider mode SHALL keep only one bootstrap-verified preconnected proxy data channel as an external Unix exception; offline SHALL keep none. A socket's presence in a permitted mount SHALL NOT authorize its use.
@@ -257,7 +261,7 @@ Provider mode SHALL set consistent uppercase and lowercase HTTP/HTTPS proxy valu
 - **AND** the second has only the read-only bundle at `/codex-home/ca/bundle.pem` and the four CA variables pointing there
 
 ### Requirement: Separate OpenAI authentication profiles
-Provider mode SHALL require a named protected profile. `openai-api` SHALL allow only `api.openai.com:443` as its base destination. `openai-account` SHALL authorize only the hosts measured from the installed Codex CLI for ChatGPT sign-in without a browser callback, token refresh and model use. Wildcards such as `*.openai.com` SHALL NOT be used; gateways and other providers SHALL need separately named profiles.
+Provider mode SHALL require a named protected profile. `openai-api` SHALL allow only `api.openai.com:443`. `openai-account` SHALL authorize only the measured hosts for ChatGPT sign-in without a browser callback, token refresh, model use and the OpenAI documentation MCP server. The explicitly selected extension `openai-api-docs` SHALL add only the measured documentation MCP hosts to `openai-api`. Wildcards SHALL NOT be used; other providers SHALL need separately named profiles.
 
 #### Scenario: API profile
 - **WHEN** `openai-api` is selected
@@ -265,7 +269,7 @@ Provider mode SHALL require a named protected profile. `openai-api` SHALL allow 
 
 #### Scenario: Account profile inventory
 - **WHEN** `openai-account` is selected
-- **THEN** exactly its measured, dated host list is reachable on 443
+- **THEN** exactly its measured, dated host list (`auth.openai.com`, `chatgpt.com` and `developers.openai.com`, on 443) is reachable
 - **AND** the inventory records the Codex version and the source documentation date
 
 #### Scenario: Browser-callback sign-in remains unsupported
@@ -274,11 +278,20 @@ Provider mode SHALL require a named protected profile. `openai-api` SHALL allow 
 - **AND** documentation names the supported sign-in methods, such as device-code login or an API key
 
 #### Scenario: API key reaches only the API profile
-- **WHEN** a provider session uses `openai-api` and the host sets `OPENAI_API_KEY`
-- **THEN** the key is passed to the container, while `openai-account` sessions and offline sessions receive no API key from the wrapper
+- **WHEN** a provider session uses `openai-api` or `openai-api-docs` and the host sets `OPENAI_API_KEY`
+- **THEN** the key is passed to the container, while `openai-account` and offline sessions receive no API key from the wrapper
+
+#### Scenario: Documentation MCP with an extension profile
+- **WHEN** an operator selects `openai-account` or `openai-api-docs` and the shared configuration declares the OpenAI documentation MCP server
+- **THEN** the MCP server starts through the relay and reaches only the measured documentation host, in addition to the sign-in or API hosts
+- **AND** other remote MCP servers stay denied
+
+#### Scenario: Base profiles stay unchanged and default
+- **WHEN** an operator runs setup or uses `openai-api`
+- **THEN** setup proposes `openai-account` for the account method and `openai-api` for the API method, `openai-api` denies the documentation host, and `openai-api-docs` requires an explicit `CODEX_CONTAINER_NETWORK_PROFILE` and its own qualification
 
 ### Requirement: Optional traffic remains opt-in
-Provider sessions SHALL disable Codex update checks, analytics, feedback upload, OTEL export and remote MCP or connectors where the tested CLI supports it, using protected launch arguments or variables that writable `config.toml` cannot override. A missing disable control SHALL NOT broaden the allowlist. Shell and YOLO modes SHALL keep the same outer restrictions.
+Provider sessions SHALL disable Codex update checks, analytics, feedback upload, OTEL export and remote MCP or connectors where supported, with protected launch arguments or variables that writable `config.toml` cannot override. The only remote MCP endpoint a profile MAY admit is the OpenAI documentation MCP, under `openai-account` or the explicitly selected `openai-api-docs`. A missing disable control SHALL NOT broaden the allowlist. Shell and YOLO modes SHALL keep the same outer restrictions.
 
 #### Scenario: Optional feature attempts outbound access
 - **WHEN** a disabled feature or writable setting attempts an update check, telemetry, connector or MCP request to an unapproved host
@@ -287,6 +300,10 @@ Provider sessions SHALL disable Codex update checks, analytics, feedback upload,
 #### Scenario: Provider-hosted tools
 - **WHEN** Codex uses a provider-hosted tool such as remote web search
 - **THEN** documentation states that this network activity happens at the provider, outside the local boundary
+
+#### Scenario: Embedded mode message
+- **WHEN** a restricted session starts Codex with the protected `-c` overrides
+- **THEN** the protected `--no-daemon` keeps Codex from printing the "Running without the shared background server" notice, and documentation explains why the shared server is not used under the guard
 
 ### Requirement: Session-owned egress resource lifecycle
 Proxy resources, setup channels, transport endpoints, configuration and local clients SHALL have unique recoverable session ownership under `io.codex-container.*` labels. Setup failure SHALL stop launch and remove only owned resources. Cleanup SHALL share the launcher's bounded shutdown budget and preserve the primary exit status. Proxy failure SHALL leave outbound attempts closed without changing mode.
@@ -468,11 +485,11 @@ Host-side guard probes run by preparation and qualification SHALL NOT depend on 
 - **THEN** the probe result is captured and relayed, and preparation proceeds as from a terminal
 
 ### Requirement: Residual exfiltration disclosure
-Provider help, README and the network contract SHALL state that destination and SNI binding cannot distinguish the operator's credentials from attacker-supplied ones, so each allowed host can receive workspace data sent with a foreign API key or account. They SHALL name the hosts of each base profile, state that only offline mode removes the channel, and SHALL NOT present host reduction as preventing it.
+Provider help, README and the network contract SHALL state that destination and SNI binding cannot distinguish the operator's credentials from attacker-supplied ones, so each allowed host can receive workspace data sent with a foreign API key or account. They SHALL name the hosts of each base and extension profile, state that only offline mode removes the channel, and SHALL NOT present host reduction as preventing it.
 
 #### Scenario: Operator reads the provider limits
 - **WHEN** an operator reads the provider help, README or network contract
-- **THEN** the foreign-credential channel is described for `api.openai.com` and every other allowed host of the selected profile
+- **THEN** the foreign-credential channel is described for `api.openai.com` and every other allowed host of the selected profile, including `developers.openai.com` for `openai-account` and `openai-api-docs`
 
 ### Requirement: Accurate provider identity documentation
 Provider help and the network contract SHALL distinguish CONNECT authorization, SNI binding of the initial and retried ClientHellos, and encrypted application routing. They SHALL state that matching SNI does not prove exclusive OpenAI communication, and SHALL name uninspected TLS 1.2 renegotiation as an accepted limitation. Credential-injecting interception SHALL be described as unimplemented.

@@ -33,8 +33,8 @@ Intentional differences are limited to per-agent files:
 | File | Codex value or behavior |
 | --- | --- |
 | `agent/profile.json` | `codex-container`, prefix `CODEX_CONTAINER`, labels `io.codex-container.*`, images `localhost/codex-cli`, `localhost/codex-egress`, `localhost/codex-guard-toolchain`, home `/codex-home`, command `codex`, `CODEX_HOME`, `CODEX_YOLO`, no shared host directories |
-| `agent/policies/default.json` | `openai-api` and `openai-account`, revision `openai-2026-11-09-v1` |
-| `codex-container.sh` | Codex arguments, shared or isolated state layout, executable `/tmp`, `/var/tmp` and `/codex-home`, protected `-c` overrides (including `sandbox_mode="danger-full-access"` in restricted modes), API key only for `openai-api` |
+| `agent/policies/default.json` | `openai-api`, `openai-account` (with the documentation MCP host) and the `openai-api-docs` extension, revision `openai-2026-11-11-v1` |
+| `codex-container.sh` | Codex arguments, shared or isolated state layout, executable `/tmp`, `/var/tmp` and `/codex-home`, protected `--no-daemon` and `-c` overrides (including `sandbox_mode="danger-full-access"`) in restricted modes, API key only for `openai-api` and `openai-api-docs` |
 | `Containerfile`, `.containerignore` | Codex image; copies `network/relay.py` and `network/mux.py` |
 | `tests/test_wrapper.py`, `test_runtime.py`, `test_network_runtime.py`, `network_tls_fixture.py`, `test_setup_runtime.py`, `run-runtime.sh`, `test_image_pins.py`, `test_reference_copy.py` | Codex names, synthetic Responses API fixture, OpenAI host inventories |
 
@@ -67,15 +67,24 @@ within the remaining shutdown budget.
 | Profile | Destinations | Status |
 | --- | --- | --- |
 | `openai-api` | `api.openai.com:443` | Synthetic coverage; real API key unverified |
-| `openai-account` | `auth.openai.com:443`, `chatgpt.com:443` | Measured statically from Codex 0.167.0 and the documentation; sign-in, request and refresh unverified |
+| `openai-account` | `auth.openai.com:443`, `chatgpt.com:443`, `developers.openai.com:443` | Sign-in hosts measured statically from Codex 0.167.0 and the documentation (sign-in, request and refresh unverified); documentation MCP host measured with a logging proxy on Codex 0.167.0 (2026-11-10) |
+| `openai-api-docs` | `api.openai.com:443`, `developers.openai.com:443` | Extension of `openai-api`; same documentation MCP measurement |
 
 `OPENAI_API_KEY` is forwarded only to provider sessions whose profile is
-exactly `openai-api`. ChatGPT sign-in uses `codex login --device-auth`; the
+`openai-api` or `openai-api-docs`. Base profiles are exact (the shared policy
+code refuses added hosts): the account method's hosts include the documentation
+MCP host, while the API method's base stays exact and `openai-api-docs` is the
+explicit extension; setup proposes only the base profiles. Revision
+`openai-2026-11-11-v1` removed `openai-account-docs`; existing provider
+installations requalify once. ChatGPT sign-in uses `codex login --device-auth`; the
 browser callback is unsupported. Optional traffic (update checks, analytics,
 feedback, OTEL export, connectors and remote plugins) is disabled with `-c`
 overrides placed before the operator's arguments, which take precedence over
 the agent-writable `config.toml`. Remote MCP servers in `config.toml` have no
-disable control; the proxy denies them.
+disable control; the proxy denies them, except the OpenAI documentation MCP
+under `openai-account` or `openai-api-docs`. Restricted launches also pass a
+protected `--no-daemon`: the shared background server needs a Unix listener the
+guard denies, and the flag keeps Codex from printing its embedded-mode notice.
 
 ## Limits
 

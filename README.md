@@ -531,7 +531,7 @@ budgets and lifetime included). Documented behaviors:
 export CONTAINER_HOST=unix:///run/user/$(id -u)/podman/podman.sock
 export CODEX_CONTAINER_NETWORK=provider
 export CODEX_CONTAINER_NETWORK_POLICY="$PWD/agent/policies/default.json"
-export CODEX_CONTAINER_NETWORK_PROFILE=openai-account   # or openai-api
+export CODEX_CONTAINER_NETWORK_PROFILE=openai-account   # or openai-api, or openai-api-docs
 export CODEX_CONTAINER_NETWORK_RUNTIME_DIR="$HOME/.local/state/codex-egress"  # private, native
 export CODEX_CONTAINER_EGRESS_IMAGE=sha256:...           # immutable proxy image ID
 bash ./codex-container.sh --container-qualify
@@ -541,9 +541,31 @@ bash ./codex-container.sh
 | Profile | Allowed destinations | Credentials |
 | --- | --- | --- |
 | `openai-api` | `api.openai.com:443` | `OPENAI_API_KEY`, forwarded only to this profile |
-| `openai-account` | `auth.openai.com:443`, `chatgpt.com:443` | ChatGPT sign-in stored in `CODEX_HOME` |
+| `openai-account` | `auth.openai.com:443`, `chatgpt.com:443`, `developers.openai.com:443` | ChatGPT sign-in stored in `CODEX_HOME`, plus the OpenAI documentation MCP |
+| `openai-api-docs` | `api.openai.com:443`, `developers.openai.com:443` | As `openai-api`, plus the OpenAI documentation MCP |
 
-The policy revision is `openai-2026-11-09-v1`, measured against Codex 0.167.0.
+`developers.openai.com` serves the OpenAI documentation MCP server
+(`codex mcp add openaiDeveloperDocs --url https://developers.openai.com/mcp`).
+Its client uses the relay, and Codex 0.167.0 reached only
+`developers.openai.com` for it. `openai-account` includes it, so account users
+reach the server by default. For the API-key method, setup proposes the exact
+`openai-api`; `openai-api-docs` is an opt-in extension that you export and
+qualify once:
+
+```bash
+export CODEX_CONTAINER_NETWORK_PROFILE=openai-api-docs
+codex-container --container-qualify   # managed launcher; or bash ./codex-container.sh
+codex-container                        # exported values take precedence over setup
+```
+
+**Migration.** Policy revision `openai-2026-11-11-v1` adds
+`developers.openai.com` to `openai-account` and removes the former
+`openai-account-docs`. Existing provider installations need setup or
+`--container-qualify` once after the update, because the policy file changed;
+if you exported `CODEX_CONTAINER_NETWORK_PROFILE=openai-account-docs`, switch
+to `openai-account`.
+
+The policy revision is `openai-2026-11-11-v1`, measured against Codex 0.167.0.
 The account inventory comes from the official authentication documentation
 and a static scan of the installed CLI; authenticated sign-in, request and
 refresh are **unverified** until the operator check recorded in
@@ -574,10 +596,21 @@ non-TLS traffic fail closed. TLS 1.2 renegotiation is encrypted and not
 inspected. This does not prove exclusive OpenAI application access: the HTTP
 `Host`, shared-service routing and provider-side forwarding stay opaque, and
 allowed services can receive data. An injected agent can send workspace data
-to an allowed host (`api.openai.com` for `openai-api`; `auth.openai.com` and
-`chatgpt.com` for `openai-account`) with an attacker's key or account; only
-`offline` removes this. Provider-hosted tools, such as web search, run at the
+to an allowed host (`api.openai.com` for `openai-api`; `auth.openai.com`,
+`chatgpt.com` and `developers.openai.com` for `openai-account`;
+`api.openai.com` and `developers.openai.com` for `openai-api-docs`) with an
+attacker's key or account; only `offline` removes this. Provider-hosted tools, such as web search, run at the
 provider outside this boundary.
+
+**Notices.** In `offline` and `provider`, the wrapper passes a protected
+`--no-daemon`, so Codex runs embedded without the `Running without the shared
+background server` notice. The shared background server cannot run under the
+guard, because it needs a Unix listener, and the protected `-c` overrides would
+select embedded mode anyway. A remote MCP server in `config.toml` whose host
+is not in the selected profile fails to start with a `HTTP CONNECT failed` or
+`error sending request` message, because the proxy denies it. Set `enabled = false` for that
+server under `[mcp_servers.<name>]`, or, for the OpenAI documentation MCP,
+use `openai-account` or `openai-api-docs`.
 
 ### Codex's own sandbox
 
@@ -585,8 +618,9 @@ Codex's command sandbox cannot run under the guard. With Codex 0.167.0 the
 Bubblewrap path needs a Netlink socket to configure loopback in a new network
 namespace, which the guard denies, and the Landlock-only path refuses to run
 without Bubblewrap. In `offline` and `provider`, the wrapper therefore adds a
-protected `-c sandbox_mode="danger-full-access"` before your arguments, so
-Codex runs commands without its inner sandbox. The guard stays the enforced
+protected `--no-daemon -c sandbox_mode="danger-full-access"` before your
+arguments, so Codex runs embedded and executes commands without its inner
+sandbox. The guard stays the enforced
 boundary: no network beyond the selected mode, no new Unix sockets, no
 capabilities, and a read-only image root. A `--sandbox` or
 `-c sandbox_mode=...` you pass after it wins as an explicit choice; an inner
