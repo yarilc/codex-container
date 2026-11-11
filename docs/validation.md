@@ -769,3 +769,60 @@ This covers an authenticated model request with tool use through the sandbox.
 Token refresh and the `openai-api` key checks remain pending. Full profile verification under the readiness checklist is not
 claimed. The checklist also covers streaming and long-lived requests,
 WebSockets, sign-in, token reuse and refresh, CA behavior and shell mode.
+
+## Adoption of `sandbox-ref-11` and lab-host fixes (`adopt-lab-host-fixes`): 2026-11-11
+
+Copied from `claude-container` tag `sandbox-ref-11` (commit `d17e865`):
+
+- `network/.containerignore`, `network/README.md`, `network/agent_budgets.py`;
+- `network/control.py`, `network/guard-build.Containerfile`, `network/guard.c`;
+- `network/proxy.py`, `network/proxy_hardening.py`;
+- `network/qualification_peer.py`, `network/qualification_probe.py`,
+  `network/qualification_records.py`, `network/qualification_runtime.py`;
+- `network/qualify.py`, `network/session.py`;
+- `setup/setup.py`, `setup/smoke.py`;
+- `tests/test_guard.py`, `tests/test_network_policy.py`,
+  `tests/test_qualification.py`, `tests/test_session.py`, `tests/test_setup.py`.
+
+The `tests/test_reference_copy.py` manifest moved to the tag.
+
+The same change ports the reference's lab-host launcher and recipe
+adaptations to Codex:
+
+- the `unix://` host socket path from Podman 5 is reduced to its path;
+- each budget is requested only when the engine reports its cgroup
+  controller. An unenforced budget gets a notice, and the created
+  configuration must carry every enforced budget and no unenforced one;
+- `/run/secrets` is masked with an empty read-only tmpfs;
+- `--read-only-tmpfs=false` is replaced by a `noexec` 64 MiB `/dev`,
+  `devpts` and an empty read-only `/dev/shm`. Codex `/tmp`, `/var/tmp` and
+  `/run` are unchanged;
+- the opted-in host CA is passed to both build paths as the `build-ca`
+  secret, and `.containerignore` admits `podman-build-secret*`;
+- Debian packages are fetched over verified HTTPS, bootstrapped from the
+  base image's Node.js roots.
+
+The wrapper test fixture now copies `network/agent_budgets.py` and answers the
+controller query. Without that fixture, 21 wrapper tests fail on the shared
+files alone.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 348 tests, 68 skipped. `test_permanently_stalled_creation_signal_matrix` failed once on timing (`stall-owned`, SIGHUP) and passed twice when rerun; this is the known timing-sensitive test |
+| `python3 -m unittest discover -s tests -p test_wrapper.py` | Passed: 74 tests, 1 skipped. New cases: Podman 5 socket URL and invalid `unix://` values; every subset of delegated controllers, with arguments, notices and inspection; unverifiable controller lists rejected before state creation; unenforced budget present or enforced budget missing; device and secrets mounts in every unrestricted mode, offline and provider; proxy secrets mask and budgets; build secret with and without trust, for `--container-build` and for a missing image |
+| `python3 -m unittest tests.test_image_pins` | Passed: 6 tests. New checks: HTTPS-only Debian sources, no disabled verification, an optional `build-ca` secret, bootstrap removal, and the toolchain recipe |
+| `bash tests/run-runtime.sh --shared` | Passed: 158 tests, 28 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 71 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 26 tests. Uses `localhost/codex-guard-toolchain:development` (`215f5ffc1023`), built from the copied recipe |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped (the 305-second idle check, `--guard-idle`) |
+| `bash tests/run-runtime.sh --network` | Passed: 23 tests, 1 skipped (`developers.openai.com`, external) |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 14 tests. Includes the tmpfs capacities and execution, and Bubblewrap and `codex sandbox` without capabilities under the new `/dev` |
+| Runtime image `localhost/codex-cli:adopt-ref-11` | Built with the wrapper's build arguments (`podman build --tag ... --file Containerfile .`), because this session has no host-visible private state for a wrapper run. Image `8ae054805108`. Debian sources `https://`, no `/tmp/apt-bootstrap-ca.pem`, `ca-certificates` installed, `codex-cli 0.167.0`, OpenSpec `1.16.0` |
+| `bash -n codex-container.sh`, `git diff --check`, `openspec validate adopt-lab-host-fixes --strict` | Passed, clean, valid |
+| Parity table | SHA-256 `893682205ada6457060a60b3a7cacc48ec8fbc8c78db8422a38344846047cf86`, identical to claude-container |
+| Operator `--container-setup` (refresh approved) and a session on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending: the operator runs them after the push |
+
+Every restricted installation must rebuild and rerun setup or qualification.
+The qualification identity, the shared code digests and the runtime image
+identity all change.

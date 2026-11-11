@@ -79,8 +79,11 @@ Environment:
   CODEX_CONTAINER_MEMORY_LIMIT session memory, integer with k/m/g unit (default: 4g)
   CODEX_CONTAINER_CPU_LIMIT    session CPUs, up to 3 decimals (default: 2)
   CODEX_CONTAINER_PIDS_LIMIT   session process limit (default: 512)
-                         Budgets cannot be disabled; they require delegated
-                         rootless cgroup v2 cpu/memory/pids controllers
+                         Budgets cannot be disabled; each is enforced only when
+                         the rootless engine delegates its cgroup v2 controller
+                         (memory, cpu, pids). A missing controller leaves that
+                         budget unenforced with a notice; without memory or
+                         process budgets a session can exhaust host resources
   CODEX_CONTAINER_RUN_TIMEOUT  session container lifetime in whole seconds
                          (default: 0, disabled by default)
   CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE exact 1 permits a refused sensitive
@@ -319,6 +322,42 @@ case "$service_remote" in
         ;;
     *) die "Cannot verify launch engine ServiceIsRemote; check that Podman reports true or false" ;;
 esac
+
+# A budget is enforced only when the verified engine reports its cgroup v2
+# controller as delegated. Unenforced budgets are not requested, are announced,
+# and must be absent from the created configuration (see network/agent_budgets.py).
+capture_engine_info info --format '{{.Host.CgroupControllers}}' \
+    || die 'cannot query the rootless cgroup controllers; check the Podman engine'
+cgroup_controllers=$engine_response
+[[ "$cgroup_controllers" =~ ^\[([a-z_]+( [a-z_]+)*)?\]$ ]] \
+    || die 'unverifiable cgroup controller list from the Podman engine'
+controller_delegated() {
+    [[ " ${cgroup_controllers:1:${#cgroup_controllers}-2} " == *" $1 "* ]]
+}
+budget_args=()
+expected_memory=0
+expected_cpu=0
+pids_enforced=0
+if controller_delegated memory; then
+    budget_args+=("--memory=$memory_bytes")
+    expected_memory=$memory_bytes
+else
+    printf 'codex-container: agent memory budget not enforced: cgroup controller memory is not delegated to the rootless engine\n' >&2
+fi
+if controller_delegated cpu; then
+    budget_args+=("--cpus=$cpu_text")
+    expected_cpu=$cpu_nano
+else
+    printf 'codex-container: agent CPU budget not enforced: cgroup controller cpu is not delegated to the rootless engine\n' >&2
+fi
+if controller_delegated pids; then
+    budget_args+=("--pids-limit=$pids_limit")
+    pids_enforced=1
+else
+    # Override any containers.conf default that would request the missing controller.
+    budget_args+=(--pids-limit=-1)
+    printf 'codex-container: agent process budget not enforced: cgroup controller pids is not delegated to the rootless engine\n' >&2
+fi
 if [[ "$network_mode" != unrestricted ]]; then
     command -v python3 >/dev/null || die 'host Python 3 is required for restricted network policy validation'
     [[ "$service_remote" == true ]] || die 'restricted networking currently requires the tested same-host Unix service; local-engine enforcement is unverified'
@@ -352,6 +391,8 @@ if ((podman_access)); then
     esac
     [[ "$socket_info" == *$'\n'* ]] || die "Podman service did not report a host socket path: $socket (check Host.RemoteSocket.Path support)"
     host_socket="${socket_info#*$'\n'}"
+    # Podman 5 reports the service socket as a unix:// URL; earlier releases report the bare path.
+    host_socket=${host_socket#unix://}
     [[ "$host_socket" == /* && "$host_socket" != *$'\n'* ]] || die "Podman service must report an absolute host socket path: $socket (check Host.RemoteSocket.Path)"
 fi
 
@@ -449,12 +490,18 @@ if [[ "$network_mode" != unrestricted ]]; then
     fi
 fi
 
+# The opted-in host CA bundle also verifies the runtime build's package fetches.
+# It is a build secret: mounted only for its RUN step and never stored in a layer.
+build_secret=()
+if [[ -n "$ca_bundle" ]]; then
+    build_secret=(--secret "id=build-ca,src=$ca_bundle")
+fi
 # Every build, including the automatic build of a missing image, is maintenance.
 maintenance=0
 [[ "${CODEX_CONTAINER_MAINTENANCE:-}" != 1 ]] || maintenance=1
 if ((build_image)); then
     ((maintenance)) || die 'image refresh requires exact CODEX_CONTAINER_MAINTENANCE=1; host pulls and build RUN steps are outside runtime filtering'
-    podman build --tag "$IMAGE" --file "$script_dir/Containerfile" "$script_dir"
+    podman build "${build_secret[@]}" --tag "$IMAGE" --file "$script_dir/Containerfile" "$script_dir"
 elif podman image exists "$IMAGE"; then
     :
 else
@@ -464,7 +511,7 @@ else
         exit "$image_status"
     fi
     ((maintenance)) || die "image $IMAGE is absent; prepare it with exact CODEX_CONTAINER_MAINTENANCE=1 (build traffic is outside runtime filtering)"
-    podman build --tag "$IMAGE" --file "$script_dir/Containerfile" "$script_dir"
+    podman build "${build_secret[@]}" --tag "$IMAGE" --file "$script_dir/Containerfile" "$script_dir"
 fi
 if [[ "$network_mode" == provider ]]; then
     if podman image exists "$CODEX_CONTAINER_EGRESS_IMAGE"; then
@@ -487,14 +534,25 @@ fi
 
 podman_args=(
     --rm --interactive
-    --read-only --read-only-tmpfs=false
+    --read-only
     --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777,size=512m
     --tmpfs /var/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m
     --tmpfs /run:rw,nosuid,nodev,mode=1777,size=32m
+    # Mask engine default mounts at /run/secrets (RHEL subscription secrets from
+    # mounts.conf): Podman skips its own mount there, leaving an empty read-only
+    # tmpfs that the guard accepts and that exposes no host material.
+    --mount type=tmpfs,destination=/run/secrets,ro=true
+    # Podman forces /dev read-only with --read-only-tmpfs=false, and crun >= 1.27
+    # must replace /dev/console to attach a terminal. Keep automatic provisioning
+    # but override each of its targets: a noexec /dev, the devpts that a user /dev
+    # mount drops, and an empty read-only /dev/shm.
+    --tmpfs '/dev:rw,nosuid,noexec,mode=755,size=65536k'
+    --mount type=devpts,destination=/dev/pts
+    --mount type=tmpfs,destination=/dev/shm,ro=true
     --userns=keep-id
     --user "$caller_uid:$(id -g)"
     --cap-drop=all --security-opt=no-new-privileges
-    "--memory=$memory_bytes" "--cpus=$cpu_text" "--pids-limit=$pids_limit"
+    "${budget_args[@]}"
     --workdir "$WORKSPACE"
     --env HOME=/codex-home
     --env CODEX_HOME=/codex-home/.codex
@@ -820,13 +878,22 @@ done
 ((pending_status == 0)) || exit "$pending_status"
 
 # Engine flags alone are not evidence: require the created configuration to
-# carry every selected budget before the application starts.
+# carry every enforced budget and no unenforced one before the application starts.
 configured_budgets=$(timeout --kill-after=1s 10s podman inspect --type container \
     --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' "$container_id") \
     || die 'Cannot inspect session resource budgets; session not started'
 ((pending_status == 0)) || exit "$pending_status"
-[[ "$configured_budgets" == "$memory_bytes $cpu_nano $pids_limit" ]] \
-    || die "Session resource budgets were not applied (expected memory=$memory_bytes nano_cpus=$cpu_nano pids=$pids_limit); check rootless cgroup v2 cpu/memory/pids controller delegation; session not started"
+read -r configured_memory configured_cpu configured_pids extra <<< "$configured_budgets"
+budgets_applied=0
+if [[ -z "${extra:-}" && "$configured_budgets" != *$'\n'* && "$configured_memory" == "$expected_memory" && "$configured_cpu" == "$expected_cpu" ]]; then
+    if ((pids_enforced)); then
+        [[ "$configured_pids" == "$pids_limit" ]] && budgets_applied=1
+    else
+        [[ "$configured_pids" =~ ^(0|-1)$ ]] && budgets_applied=1
+    fi
+fi
+((budgets_applied)) \
+    || die "Session resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu pids=$( ((pids_enforced)) && printf '%s' "$pids_limit" || printf 'unenforced')); engine reports controllers $cgroup_controllers; check rootless cgroup v2 controller delegation; session not started"
 
 # Explicit redirection retains redirected stdin for the background client.
 attached=1

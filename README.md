@@ -223,7 +223,11 @@ every mode. Without it the wrapper stops before any build or pull. Image
 inspection status 0 uses the existing image; status 1 builds a missing image
 only under maintenance. Other inspection errors stop startup; check the
 reported storage or engine error instead of expecting a rebuild. A failed
-build never starts a session. Host pulls and build `RUN` steps happen outside
+build never starts a session. Image preparation fetches Debian packages over
+verified HTTPS only and needs outbound HTTPS (443) to the Debian, npm and
+container registries, not port 80. With host CA trust enabled, the selected
+bundle is also passed to the build as the `build-ca` secret, so the package
+fetches verify on TLS-intercepting networks; it is never stored in a layer. Host pulls and build `RUN` steps happen outside
 runtime network filtering.
 
 The default-deny `.containerignore` admits only `Containerfile`,
@@ -456,7 +460,7 @@ build the image. Restricted failures never fall back to unrestricted
 networking. Offline sessions cannot reach the OpenAI API.
 
 The restricted implementation is shared with `claude-container` and copied
-unchanged from its tag `sandbox-ref-10`; see
+unchanged from its tag `sandbox-ref-11`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md). Every agent container, in every mode,
 drops all capabilities, enables no-new-privileges and receives the memory, CPU
@@ -646,6 +650,16 @@ Ephemeral home has no explicit capacity imposed by this policy. Writes can fail
 when a bounded mount fills; workspace and persistent state remain separate host
 storage.
 
+Each session also mounts its own `/dev` tmpfs (`nosuid,noexec`, mode 755,
+64 MiB), an explicit `devpts` at `/dev/pts` and an empty read-only `/dev/shm`.
+Podman 5 with crun 1.27 cannot attach a terminal when `/dev` is read-only, so
+the wrapper keeps automatic read-only tmpfs provisioning and overrides each of
+its targets. `/dev` is therefore writable but not executable; no device can be
+created without capabilities. Tools that need POSIX shared memory in
+`/dev/shm` are not supported. An empty read-only tmpfs at `/run/secrets` masks
+engine default mounts there (for example RHEL subscription certificates from
+`mounts.conf`), so host secrets are not visible in any mode.
+
 By default, the current workspace is mounted at the same absolute path inside
 the container. With `--container-git-worktree`, its immediate physical parent
 is mounted at that same absolute path instead; the working directory and
@@ -691,11 +705,19 @@ Every session has explicit resource budgets:
 | `CODEX_CONTAINER_PIDS_LIMIT` | `512` | integer from 1 to 4194304 |
 
 Only an unset variable selects the default; no value disables a budget, and an
-invalid value stops the wrapper before any engine query. After creating the
-container, the wrapper checks that the engine applied every budget and stops
-before Codex starts otherwise. Budgets need delegated rootless cgroup v2 `cpu`,
-`memory` and `pids` controllers. Budgets and tmpfs sizes do not limit workspace
-or `CODEX_HOME` storage growth.
+invalid value stops the wrapper before any engine query. Each budget is enforced
+only when the rootless engine delegates its cgroup v2 controller (`memory`,
+`cpu`, `pids`), as reported by `podman info` (`Host.CgroupControllers`). A
+missing controller leaves that budget unenforced: the wrapper does not request
+it, prints a notice such as `codex-container: agent CPU budget not enforced:
+cgroup controller cpu is not delegated to the rootless engine`, and continues
+without a question. Provider proxies follow the same rule for their 128-process
+and 256 MiB limits. Without the memory or process budget, a session can exhaust
+host memory or processes for your user. After creating the container, the
+wrapper checks that every enforced budget was applied and that no unenforced one
+is present, and stops before Codex starts otherwise. Restricted qualification
+records the enforced set, so a change in delegation requires requalification.
+Budgets and tmpfs sizes do not limit workspace or `CODEX_HOME` storage growth.
 
 `CODEX_CONTAINER_RUN_TIMEOUT` optionally sets the session container lifetime in
 whole seconds; unset, empty or `0` disables it (the default). When the engine

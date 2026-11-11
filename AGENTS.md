@@ -28,7 +28,7 @@
 `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`,
 `test_qualification.py`, `test_guard.py`, `test_session.py`,
 `test_network_feasibility.py` and their fixtures) are copied unchanged from
-`claude-container` at tag `sandbox-ref-10`. Never edit them here and never add an
+`claude-container` at tag `sandbox-ref-11`. Never edit them here and never add an
 agent identifier (`codex`, `openai`) to them: fix a defect in `claude-container`
 first, then copy the files again and update the manifest in
 `tests/test_reference_copy.py`. Codex values come only from `agent/`, the
@@ -209,5 +209,13 @@ Do not broaden mounts beyond that documented behavior. Every session drops all
 capabilities, sets no-new-privileges and has validated, inspected memory, CPU
 and process budgets (`CODEX_CONTAINER_MEMORY_LIMIT`/`CPU_LIMIT`/`PIDS_LIMIT`,
 defaults 4g/2/512) plus an optional `CODEX_CONTAINER_RUN_TIMEOUT`; never add
-capabilities back or weaken a budget to fix a tool. Image inputs are pinned in
+capabilities back or weaken a budget the engine can enforce to fix a tool. A
+budget whose cgroup v2 controller the rootless engine does not delegate
+(`Host.CgroupControllers`) is omitted, announced and bound into the
+qualification identity; never require host changes to delegate it. Sessions
+mask `/run/secrets` with an empty read-only tmpfs and mount their own `noexec`
+`/dev`, `devpts` and an empty read-only `/dev/shm`; do not reintroduce
+`--read-only-tmpfs=false` or a writable `/dev/shm`. The runtime recipe fetches
+Debian packages over verified HTTPS only; the host CA reaches builds only as the
+`build-ca` secret. Image inputs are pinned in
 `Containerfile` and change only through the README update procedure.

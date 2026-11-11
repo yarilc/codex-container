@@ -29,6 +29,8 @@ if args[0] == 'info' and args[-1] == '{{json .Host}}':
         'security': {'seccompEnabled': True, 'selinuxEnabled': False, 'apparmorEnabled': False}}))
 elif args[0] == 'info' and args[-1] == '{{.Host.NetworkBackend}}':
     print(os.environ.get('FAKE_BACKEND', 'netavark'))
+elif args[0] == 'info' and args[-1] == '{{.Host.CgroupControllers}}':
+    print(os.environ.get('FAKE_CONTROLLERS', '[cpu memory pids]'))
 elif args[0] == 'version':
     print(os.environ.get('FAKE_SERVER_VERSION', '4.9.3'))
 elif args[:2] == ['image', 'inspect']:
@@ -102,10 +104,11 @@ elif args[0] == 'inspect':
     else:
         calls = [json.loads(line) for line in pathlib.Path(os.environ['FAKE_LOG']).read_text().splitlines()]
         create = [c for c in calls if c[0] == 'create'][-1]
-        value = lambda prefix: next(a[len(prefix):] for a in create if a.startswith(prefix))
-        whole, _, frac = value('--cpus=').partition('.')
+        # Unrequested budgets are reported as the engine does: zero memory/CPU.
+        value = lambda prefix, default: next((a[len(prefix):] for a in create if a.startswith(prefix)), default)
+        whole, _, frac = value('--cpus=', '0').partition('.')
         nano = int(whole) * 10**9 + int((frac + '000')[:3]) * 10**6
-        print(value('--memory='), nano, value('--pids-limit='))
+        print(value('--memory=', '0'), nano, value('--pids-limit=', '0'))
     sys.exit(int(os.environ.get('FAKE_INSPECT_STATUS', '0')))
 elif args[0] in ('kill', 'rm'):
     if os.environ.get('FAKE_CONTROL_STALL') == args[0]:
@@ -203,6 +206,21 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(build, ['build', '--tag', 'test/custom:tag', '--file',
                                  str(ROOT / 'Containerfile'), str(ROOT)])
         self.assertEqual(self.run_args()[-2:], ['test/custom:tag', '--version'])
+
+    def test_builds_receive_the_host_ca_only_when_trusted(self):
+        bundle = self.base / 'bundle.pem'
+        bundle.write_text('synthetic certificate bundle')
+        for (flags, image_status), trust in itertools.product(
+                ((['--container-build'], '0'), ([], '1')), ('0', '1')):
+            with self.subTest(flags=flags, missing=image_status == '1', trust=trust):
+                result = self.run_wrapper(*flags, CODEX_CONTAINER_MAINTENANCE='1',
+                                          CODEX_CONTAINER_TRUST_HOST_CA=trust,
+                                          CODEX_CONTAINER_CA_BUNDLE=str(bundle), FAKE_IMAGE_STATUS=image_status)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                build = next(c for c in self.calls() if c[0] == 'build')
+                secrets = [build[i + 1] for i, arg in enumerate(build[:-1]) if arg == '--secret']
+                self.assertEqual(secrets, [f'id=build-ca,src={bundle.resolve()}'] if trust == '1' else [])
+                self.assertEqual(build[-3:], ['--file', str(ROOT / 'Containerfile'), str(ROOT)][-3:])
 
     def test_engine_failure_matrix_before_image_operations(self):
         infos = ['false linux false', 'true darwin false', '', 'true linux',
@@ -642,6 +660,7 @@ reap_client
             self.assertEqual(mounts, ['/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
                                       '/var/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
                                       '/run:rw,nosuid,nodev,mode=1777,size=32m',
+                                      '/dev:rw,nosuid,noexec,mode=755,size=65536k',
                                       '/codex-home:rw,exec,nosuid,nodev,mode=1777'])
 
     def test_private_state_creation_and_mask(self):
@@ -741,6 +760,15 @@ reap_client
         self.assertNotIn(f'{self.sock_path}:/run/podman/podman.sock:rw', self.run_args())
         self.assertIn('CONTAINER_HOST=unix:///run/podman/podman.sock', self.run_args())
 
+    def test_podman5_socket_url_is_reduced_to_its_path(self):
+        # Podman 5 reports Host.RemoteSocket.Path as a unix:// URL.
+        result = self.run_wrapper(CODEX_CONTAINER_PODMAN='1',
+                                  CODEX_CONTAINER_PODMAN_SOCKET=str(self.sock_path),
+                                  FAKE_SOCKET_INFO='true\nunix:///host/podman.sock')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('/host/podman.sock:/run/podman/podman.sock:rw', self.run_args())
+        self.assertNotIn('unix:///host/podman.sock:/run/podman/podman.sock:rw', self.run_args())
+
     def test_socket_fallbacks_and_symlink(self):
         runtime = self.base / 'runtime'
         (runtime / 'podman').mkdir(parents=True)
@@ -791,7 +819,7 @@ reap_client
             self.sock_path.chmod(0o700)
 
     def test_service_failures_before_image_operations(self):
-        infos = ['false\n/host/socket', 'true', 'true\n', 'true\nrelative',
+        infos = ['false\n/host/socket', 'true', 'true\n', 'true\nrelative', 'true\nunix://relative', 'true\nunix://',
                  '', 'maybe\n/host/socket', 'true\n/host/socket\nextra']
         for shell, build, info in itertools.product((False, True), (False, True), infos):
             with self.subTest(shell=shell, build=build, info=info):
@@ -834,14 +862,41 @@ reap_client
             volumes = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == '--volume']
             self.assertEqual(volumes, [f'{mount}:{mount}:rw', f'{self.state}:/codex-home/.codex:rw'])
             self.assertIn(f'{os.getuid()}:{os.getgid()}', args)
-            self.assertIn('--read-only-tmpfs=false', args)
-            self.assertEqual(sum(a == '--tmpfs' for a in args), 4)
+            self.assertNotIn('--read-only-tmpfs=false', args)
+            self.assertEqual(sum(a == '--tmpfs' for a in args), 5)
         alias = self.base / 'alias'
         alias.symlink_to(self.project, target_is_directory=True)
         self.project = alias
         result = self.run_wrapper('--container-git-worktree')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f'{alias.resolve().parent}:{alias.resolve().parent}:rw', self.run_args())
+
+    DEVICE_MOUNTS = ('/dev:rw,nosuid,noexec,mode=755,size=65536k',
+                     'type=devpts,destination=/dev/pts',
+                     'type=tmpfs,destination=/dev/shm,ro=true',
+                     'type=tmpfs,destination=/run/secrets,ro=true')
+
+    def assert_device_and_secret_mounts(self, args):
+        self.assertIn('--read-only', args)
+        self.assertNotIn('--read-only-tmpfs=false', args)
+        mounts = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg in ('--tmpfs', '--mount')]
+        for mount in self.DEVICE_MOUNTS:
+            self.assertEqual(mounts.count(mount), 1, mount)
+        # Codex temporary storage keeps its own executable policy and sizes.
+        for mount in ('/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
+                      '/var/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
+                      '/run:rw,nosuid,nodev,mode=1777,size=32m'):
+            self.assertIn(mount, mounts)
+
+    def test_device_and_secret_mounts_in_every_unrestricted_mode(self):
+        for flags, env in itertools.product(([], ['--container-shell']),
+                                            ({}, {'CODEX_YOLO': '1'},
+                                             {'CODEX_CONTAINER_PODMAN': '1',
+                                              'CODEX_CONTAINER_PODMAN_SOCKET': str(self.sock_path)})):
+            with self.subTest(flags=flags, env=env):
+                result = self.run_wrapper(*flags, **env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assert_device_and_secret_mounts(self.run_args())
 
     # Session hardening baseline (B01-B05), same rules as claude-container.
     BUDGET_REJECTIONS = {
@@ -907,6 +962,48 @@ reap_client
                 calls = self.calls()
                 self.assertFalse(any(c[0] == 'start' for c in calls))
                 self.assertIn(['rm', '--force', '--ignore', '--time', '0', 'a' * 64], calls)
+
+    def test_budgets_follow_delegated_controllers(self):
+        notices = {'memory': 'agent memory budget not enforced: cgroup controller memory',
+                   'cpu': 'agent CPU budget not enforced: cgroup controller cpu',
+                   'pids': 'agent process budget not enforced: cgroup controller pids'}
+        for size in range(4):
+            for present in itertools.combinations(('cpu', 'memory', 'pids'), size):
+                controllers = '[' + ' '.join(present) + ']'
+                with self.subTest(controllers=controllers):
+                    result = self.run_wrapper(FAKE_CONTROLLERS=controllers)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    args = self.run_args()
+                    self.assertEqual(any(a.startswith('--memory=') for a in args), 'memory' in present)
+                    self.assertEqual(any(a.startswith('--cpus=') for a in args), 'cpu' in present)
+                    self.assertEqual(self.option(args, '--pids-limit='), '512' if 'pids' in present else '-1')
+                    for controller, notice in notices.items():
+                        self.assertEqual(notice in result.stderr, controller not in present)
+                    self.assertIn('start', [c[0] for c in self.calls()])
+
+    def test_unverifiable_controller_list_stops_before_state(self):
+        for controllers in ('', 'cpu memory', '[cpu,memory]', '[CPU]', '[cpu  memory]', 'unknown'):
+            with self.subTest(controllers=controllers):
+                result = self.run_wrapper(FAKE_CONTROLLERS=controllers)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('cgroup controller', result.stderr)
+                self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
+                self.assertFalse(self.state.exists())
+
+    def test_unenforced_budget_present_or_enforced_budget_missing_stops(self):
+        cases = (('[memory pids]', f'{4 << 30} 2000000000 512'),   # CPU applied without its controller
+                 ('[cpu memory]', f'{4 << 30} 2000000000 512'),     # process limit without its controller
+                 ('[cpu pids]', f'{4 << 30} 2000000000 512'),       # memory applied without its controller
+                 ('[cpu memory]', f'{4 << 30} 2000000000 0'),       # accepted: unenforced pids reported as 0
+                 ('[cpu memory pids]', f'0 2000000000 512'))        # enforced memory missing
+        for controllers, budgets in cases:
+            with self.subTest(controllers=controllers, budgets=budgets):
+                result = self.run_wrapper(FAKE_CONTROLLERS=controllers, FAKE_AGENT_BUDGETS=budgets)
+                accepted = budgets.endswith(' 0')
+                self.assertEqual(result.returncode, 0 if accepted else 1, result.stderr)
+                if not accepted:
+                    self.assertIn('engine reports controllers ' + controllers, result.stderr)
+                    self.assertFalse(any(c[0] == 'start' for c in self.calls()))
 
     def test_lifetime_argument_and_notice(self):
         for value in ('', '0'):
@@ -993,7 +1090,7 @@ reap_client
         guard.write_text('#!/bin/sh\nexit 0\n')
         guard.chmod(0o700)
         (guard.parent / 'sandbox-egress-guard.sha256').write_text('c' * 64 + '  sandbox-egress-guard\n')
-        for name in ('network/session.py', 'network/agent_profile.py', 'network/policy.py', 'network/revisions.py',
+        for name in ('network/session.py', 'network/agent_profile.py', 'network/agent_budgets.py', 'network/policy.py', 'network/revisions.py',
                      'network/platform_check.py', 'network/proxy_hardening.py', 'agent/profile.json'):
             (install / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, install / name)
@@ -1231,6 +1328,7 @@ reap_client
                 create = self.run_args()
                 for value in ('--network=none', '--cap-drop=all', '--security-opt=no-new-privileges'):
                     self.assertIn(value, create)
+                self.assert_device_and_secret_mounts(create)
                 self.assertEqual(create[create.index('--entrypoint', create.index('--network=none')) + 1],
                                  '/opt/sandbox-egress/guard')
                 self.assertTrue(any(a.startswith('io.codex-container.session=session') or
@@ -1266,6 +1364,12 @@ reap_client
                               creates[0])
                 agent = creates[1]
                 self.assertIn('HTTPS_PROXY=http://127.0.0.1:18080', agent)
+                self.assert_device_and_secret_mounts(agent)
+                # The shared proxy helper masks /run/secrets and requests both delegated budgets.
+                proxy = creates[0]
+                self.assertIn('type=tmpfs,destination=/run/secrets,ro=true', proxy)
+                self.assertIn('--memory=256m', proxy)
+                self.assertIn('--pids-limit=128', proxy)
                 tail = agent[agent.index('d' * 64) + 1:]
                 user = ['-c', 'analytics.enabled=true', 'exec', 'x']
                 expected = ['--provider', '--', *relay, '/usr/local/bin/codex', *protected,
