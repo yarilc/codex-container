@@ -755,3 +755,17 @@ wrapper's sanitized stderr.
 
 A first run of all wrappers' suites was interrupted by a host crash. Its
 leftover test containers were removed before this run.
+
+## Operator authenticated session: 2026-11-11
+
+The operator ran an authenticated Codex session in provider mode with the
+setup-default profile `openai-account`. In the TUI, they asked the model to confirm
+that it could use the harness tools and to report the sandbox's access limits.
+The model did both, and the operator found the result correct.
+
+Earlier the same day, after the documentation-MCP change, the operator had already confirmed that Codex works with authentication. That confirmation was not recorded at the time, and this section records it.
+
+This covers an authenticated model request with tool use through the sandbox.
+Token refresh and the `openai-api` key checks remain pending. Full profile verification under the readiness checklist is not
+claimed. The checklist also covers streaming and long-lived requests,
+WebSockets, sign-in, token reuse and refresh, CA behavior and shell mode.
