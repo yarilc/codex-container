@@ -30,7 +30,7 @@ With the integration disabled, the runtime SHALL retain its installed Podman com
 
 ### Requirement: Enabled access uses the host rootless service
 
-With Podman access enabled, the wrapper SHALL provide the Podman command, validate the selected Unix socket, mount its reported host-side path at `/run/podman/podman.sock`, and set `CONTAINER_HOST=unix:///run/podman/podman.sock`. Missing sockets SHALL produce an actionable error before starting a session. The wrapper SHALL verify that the service at that exact socket reports rootless operation before exposing it. Access SHALL NOT require privileged mode or a nested daemon.
+With Podman access enabled, the wrapper SHALL provide the Podman command, validate the selected Unix socket, mount its reported host-side path at `/run/podman/podman.sock`, and set `CONTAINER_HOST=unix:///run/podman/podman.sock`. Missing sockets SHALL produce an actionable error before starting a session. The wrapper SHALL verify that the service at that exact socket reports rootless operation before exposing it. A host-side path reported as a `unix://` URL SHALL be reduced to its path before validation. Access SHALL NOT require privileged mode or a nested daemon.
 
 #### Scenario: Enabled service access
 - **WHEN** the opt-in is enabled and the host socket is usable and reports a rootless engine
@@ -51,8 +51,12 @@ With Podman access enabled, the wrapper SHALL provide the Podman command, valida
 - **THEN** the wrapper queries the visible socket explicitly and supplies the reported host-side path as the bind source
 - **AND** the session receives `CONTAINER_HOST=unix:///run/podman/podman.sock`
 
+#### Scenario: Podman 5 reports a socket URL
+- **WHEN** the selected service reports its host-side path as `unix:///run/user/1000/podman/podman.sock`
+- **THEN** the wrapper mounts `/run/user/1000/podman/podman.sock` at `/run/podman/podman.sock`
+
 #### Scenario: Invalid host-side socket path
-- **WHEN** the selected service reports an empty or non-absolute host-side socket path
+- **WHEN** the selected service reports an empty or non-absolute host-side socket path, also after removing a `unix://` prefix
 - **THEN** the wrapper fails with an actionable error before image inspection, building, or startup
 
 ### Requirement: Keep one image for both access modes

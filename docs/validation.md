@@ -851,7 +851,7 @@ The fix creates `/workspace` in the package step
 | Runtime image `localhost/codex-cli:adopt-ref-11` rebuilt | Image `1ba1ef985c20`. `podman export` of a fresh container lists `workspace/` (root, 755, build time 07:10). A `--userns=keep-id` container without `--workdir`, started at 07:12, shows the unchanged build time, so the engine did not create the directory |
 | `bash tests/run-runtime.sh --qualification` with that image | Passed: 26 tests |
 | `bash tests/run-runtime.sh` (`test_runtime.py`) with that image | Passed: 14 tests |
-| Operator `--container-setup` on the Rocky Linux 9 lab host | Pending: this host has no domain UID, so the failure cannot be reproduced here |
+| Operator `--container-setup` on the Rocky Linux 9 lab host | Passed (operator-reported, 2026-11-12): setup completed on the image with the fix, and the operator's own tests on that host passed |
 
 Follow-up, not in this change: the shared gate containers in
 `network/qualify.py` should pass `--workdir /`, so they never depend on an
