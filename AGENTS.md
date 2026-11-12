@@ -213,8 +213,9 @@ capabilities back or weaken a budget the engine can enforce to fix a tool. A
 budget whose cgroup v2 controller the rootless engine does not delegate
 (`Host.CgroupControllers`) is omitted, announced and bound into the
 qualification identity; never require host changes to delegate it. Sessions
-mask `/run/secrets` with an empty read-only tmpfs and mount their own `noexec`
-`/dev`, `devpts` and an empty read-only `/dev/shm`; do not reintroduce
+mask `/run/secrets` and `/dev/shm` with empty read-only tmpfs mounts and leave
+`/dev` and its `devpts` to the engine (an explicit `devpts` gets
+`ptmxmode=000`, so no pseudo-terminal can be opened); do not reintroduce
 `--read-only-tmpfs=false` or a writable `/dev/shm`. The runtime recipe fetches
 Debian packages over verified HTTPS only; the host CA reaches builds only as the
 `build-ca` secret. Image inputs are pinned in

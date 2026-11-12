@@ -650,12 +650,14 @@ Ephemeral home has no explicit capacity imposed by this policy. Writes can fail
 when a bounded mount fills; workspace and persistent state remain separate host
 storage.
 
-Each session also mounts its own `/dev` tmpfs (`nosuid,noexec`, mode 755,
-64 MiB), an explicit `devpts` at `/dev/pts` and an empty read-only `/dev/shm`.
 Podman 5 with crun 1.27 cannot attach a terminal when `/dev` is read-only, so
-the wrapper keeps automatic read-only tmpfs provisioning and overrides each of
-its targets. `/dev` is therefore writable but not executable; no device can be
-created without capabilities. Tools that need POSIX shared memory in
+the wrapper keeps automatic read-only tmpfs provisioning. The engine provides
+`/dev` and a `devpts` at `/dev/pts` that allows pseudo-terminals, which
+interactive tools such as `script`, `expect` or `tmux` need. An explicit
+`devpts` mount would get `ptmxmode=000`, and no pseudo-terminal could be
+opened. Each session mounts an empty read-only `/dev/shm`. On Podman 5,
+`/dev` is the engine's writable tmpfs, but no device can be created without
+capabilities. On Podman 4.9, `/dev` stays read-only. Tools that need POSIX shared memory in
 `/dev/shm` are not supported. An empty read-only tmpfs at `/run/secrets` masks
 engine default mounts there (for example RHEL subscription certificates from
 `mounts.conf`), so host secrets are not visible in any mode.

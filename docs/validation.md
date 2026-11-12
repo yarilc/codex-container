@@ -878,3 +878,32 @@ shared code digests change, so restricted installations rerun qualification.
 | `bash tests/run-runtime.sh --network` | Passed: 23 tests, 1 skipped (`developers.openai.com`, external) |
 | Runtime image used | `localhost/codex-cli:adopt-ref-11` (`1ba1ef985c20`), the current recipe |
 | Operator `--container-setup` on the hosts in use | Pending |
+
+## Engine-provided `/dev` for pseudo-terminals: 2026-11-12
+
+Change `use-engine-dev-for-pseudo-terminals`, launcher only, as in the Claude
+reference (claude-container `docs/validation.md`, same title). No shared file
+changes.
+
+Codex and shell containers no longer mount their own `/dev` tmpfs or
+`devpts`. The explicit `devpts` from `sandbox-ref-11` took the kernel
+defaults `mode=600,ptmxmode=000`, so no process in a session could open a
+pseudo-terminal ("out of pty devices"). The terminal itself attached,
+because the engine allocates the console outside that `devpts`. The engine's
+`devpts` is `mode=620,ptmxmode=666`. On Podman 5, `/dev` is now the engine's
+writable tmpfs without `noexec`. Codex's `/tmp` and `/var/tmp` were already
+executable. The requirement "Terminal-compatible device mounts" is replaced
+by "Engine-provided device mounts allow pseudo-terminals".
+
+| Check | Result |
+| --- | --- |
+| Codex image `localhost/codex-cli:adopt-ref-11` (`1ba1ef985c20`) with the previous `/dev` arguments | `pty.openpty()`: "out of pty devices" |
+| `test_pseudo_terminals_and_device_masks` (new) with the previous launcher | Failed: "out of pty devices" |
+| `test_pseudo_terminals_and_device_masks` with the fix | Passed |
+| `tests/test_wrapper.py` | Passed: 74 tests, 1 skipped. With the previous launcher, the updated assertions fail (15 failures) |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 351 tests, 69 skipped (the runtime tests are opt-in) |
+| `bash tests/run-runtime.sh` (`test_runtime.py`, image `1ba1ef985c20`) | Passed: 15 tests, including `test_pseudo_terminals_and_device_masks`, `test_tmpfs_capacities_execution_and_exhaustion` and `test_tools_and_codex_sandbox_without_capabilities` |
+| Operator `--container-setup` and an interactive session on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+
+Qualification digests the launcher, so restricted installations rerun
+`--container-setup`. The runtime image is unchanged.

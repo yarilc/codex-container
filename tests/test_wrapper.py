@@ -660,7 +660,6 @@ reap_client
             self.assertEqual(mounts, ['/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
                                       '/var/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
                                       '/run:rw,nosuid,nodev,mode=1777,size=32m',
-                                      '/dev:rw,nosuid,noexec,mode=755,size=65536k',
                                       '/codex-home:rw,exec,nosuid,nodev,mode=1777'])
 
     def test_private_state_creation_and_mask(self):
@@ -863,7 +862,7 @@ reap_client
             self.assertEqual(volumes, [f'{mount}:{mount}:rw', f'{self.state}:/codex-home/.codex:rw'])
             self.assertIn(f'{os.getuid()}:{os.getgid()}', args)
             self.assertNotIn('--read-only-tmpfs=false', args)
-            self.assertEqual(sum(a == '--tmpfs' for a in args), 5)
+            self.assertEqual(sum(a == '--tmpfs' for a in args), 4)
         alias = self.base / 'alias'
         alias.symlink_to(self.project, target_is_directory=True)
         self.project = alias
@@ -871,9 +870,7 @@ reap_client
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f'{alias.resolve().parent}:{alias.resolve().parent}:rw', self.run_args())
 
-    DEVICE_MOUNTS = ('/dev:rw,nosuid,noexec,mode=755,size=65536k',
-                     'type=devpts,destination=/dev/pts',
-                     'type=tmpfs,destination=/dev/shm,ro=true',
+    DEVICE_MOUNTS = ('type=tmpfs,destination=/dev/shm,ro=true',
                      'type=tmpfs,destination=/run/secrets,ro=true')
 
     def assert_device_and_secret_mounts(self, args):
@@ -882,6 +879,11 @@ reap_client
         mounts = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg in ('--tmpfs', '--mount')]
         for mount in self.DEVICE_MOUNTS:
             self.assertEqual(mounts.count(mount), 1, mount)
+        # The engine provides /dev and a devpts that allows pseudo-terminals; an
+        # explicit devpts would get ptmxmode=000.
+        self.assertFalse(any(m == '/dev' or m.startswith('/dev:') or 'type=devpts' in m
+                             or m.endswith('destination=/dev') or 'destination=/dev,' in m
+                             for m in mounts), mounts)
         # Codex temporary storage keeps its own executable policy and sizes.
         for mount in ('/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
                       '/var/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m',
