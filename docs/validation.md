@@ -856,3 +856,25 @@ The fix creates `/workspace` in the package step
 Follow-up, not in this change: the shared gate containers in
 `network/qualify.py` should pass `--workdir /`, so they never depend on an
 image workdir. This needs a claude-container change and tag `sandbox-ref-12`.
+
+## Adoption of `sandbox-ref-12`: 2026-11-12
+
+Copied from `claude-container` tag `sandbox-ref-12` (commit `fd196c9`): `network/qualification_records.py`, `network/qualify.py`, `tests/test_qualification.py`, `tests/test_setup.py`.
+The `tests/test_reference_copy.py` manifest moved to the tag.
+
+The gate containers and the security-identity probe now pass `--workdir /`.
+The shared runtime-build test pins `runtime_build: recipe`. Codex already
+creates `/workspace` in its image, so no observed behavior changes. The
+shared code digests change, so restricted installations rerun qualification.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 350 tests, 68 skipped |
+| `bash tests/run-runtime.sh --shared` | Passed: 159 tests, 28 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 71 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 27 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped (the 305-second idle check) |
+| `bash tests/run-runtime.sh --network` | Passed: 23 tests, 1 skipped (`developers.openai.com`, external) |
+| Runtime image used | `localhost/codex-cli:adopt-ref-11` (`1ba1ef985c20`), the current recipe |
+| Operator `--container-setup` on the hosts in use | Pending |

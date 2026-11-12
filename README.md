@@ -460,7 +460,7 @@ build the image. Restricted failures never fall back to unrestricted
 networking. Offline sessions cannot reach the OpenAI API.
 
 The restricted implementation is shared with `claude-container` and copied
-unchanged from its tag `sandbox-ref-11`; see
+unchanged from its tag `sandbox-ref-12`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md). Every agent container, in every mode,
 drops all capabilities, enables no-new-privileges and receives the memory, CPU
