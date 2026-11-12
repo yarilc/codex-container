@@ -53,12 +53,15 @@ RUN --mount=type=secret,id=build-ca,required=false \
         "@openai/codex@${CODEX_VERSION}" \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /root/.npm \
-    && mkdir -p /codex-home \
+    && mkdir -p /codex-home /workspace \
     && chmod 1777 /codex-home
 
 # Agent-side relay for restricted sessions; the guard is mounted from the
 # protected installation at launch, never baked into this image.
 COPY network/relay.py network/mux.py /opt/sandbox-egress/
 
+# /workspace is created in the package step above: a WORKDIR missing from every
+# layer is created and chowned by the engine at each container start, which
+# fails for large domain UIDs under --userns=keep-id.
 WORKDIR /workspace
 ENTRYPOINT ["codex"]

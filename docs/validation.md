@@ -826,3 +826,33 @@ files alone.
 Every restricted installation must rebuild and rerun setup or qualification.
 The qualification identity, the shared code digests and the runtime image
 identity all change.
+
+### Image working directory fix (`adopt-lab-host-fixes`, tasks 7.x): 2026-11-12
+
+The operator's `--container-setup` on the Rocky Linux 9 lab host, on the
+adoption above, failed in the qualification gate with
+`chowning container ... workdir to container root: potentially insufficient
+UIDs or GIDs available in user namespace (requested 31600276:31600276 for
+.../merged/workspace)`. The cause is in the recipe:
+
+- `WORKDIR /workspace` was the recipe's last step before `ENTRYPOINT`, so the
+  directory was in no image layer;
+- the shared gate containers pass no `--workdir`, so Podman created the
+  directory at every start and chowned it;
+- under `--userns=keep-id`, that chown fails for the operator's domain UID.
+
+The fix creates `/workspace` in the package step
+(`mkdir -p /codex-home /workspace`). `tests/test_image_pins.py` now rejects a
+`WORKDIR` that no earlier `RUN` step creates.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_image_pins` | Passed: 7 tests, including the new workdir check and its mutated recipe |
+| Runtime image `localhost/codex-cli:adopt-ref-11` rebuilt | Image `1ba1ef985c20`. `podman export` of a fresh container lists `workspace/` (root, 755, build time 07:10). A `--userns=keep-id` container without `--workdir`, started at 07:12, shows the unchanged build time, so the engine did not create the directory |
+| `bash tests/run-runtime.sh --qualification` with that image | Passed: 26 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) with that image | Passed: 14 tests |
+| Operator `--container-setup` on the Rocky Linux 9 lab host | Pending: this host has no domain UID, so the failure cannot be reproduced here |
+
+Follow-up, not in this change: the shared gate containers in
+`network/qualify.py` should pass `--workdir /`, so they never depend on an
+image workdir. This needs a claude-container change and tag `sandbox-ref-12`.
