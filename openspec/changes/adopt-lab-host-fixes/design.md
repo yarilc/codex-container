@@ -32,6 +32,24 @@ before `sandbox-ref-11`.
 inside a session. The new device mounts are therefore exercised by the
 existing runtime suite.
 
+After the first implementation, the operator's setup on the Rocky host
+failed in the qualification gate. Podman reported "chowning container
+workdir to container root", requested as `31600276:31600276`, for
+`/workspace`. The cause is in the recipe:
+
+- In the Codex image, `/workspace` carries the container start time; in the
+  Claude image it carries the build time.
+- Claude has a `COPY` after `WORKDIR /workspace`, which creates the directory
+  in a layer. Codex declares `WORKDIR` as its last step before `ENTRYPOINT`,
+  so the Podman builder never materializes it.
+- The shared gate containers (`network/qualify.py`, `Gate.common()`) pass no
+  `--workdir`. Podman then creates the missing image workdir and chowns it at
+  start, and that chown fails for a domain UID under `--userns=keep-id`.
+- Agent containers are not affected, because their `--workdir` is the
+  mounted workspace.
+
+OpenCode and Antigravity have the same pattern. Pi declares no `WORKDIR`.
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -46,6 +64,9 @@ existing runtime suite.
 - Changing the shared files. If a shared file fails here, the procedure in
   `docs/propagation.md` applies: fix it in claude-container under a new tag.
 - OpenCode, Pi and Antigravity.
+- Passing `--workdir /` to the gate containers in `network/qualify.py`. That
+  is shared code, so it belongs to a claude-container change under a new tag
+  and is tracked as a follow-up.
 
 ## Decisions
 
@@ -111,6 +132,18 @@ existing runtime suite.
      `unix://` socket, the mounts in every mode and the build secret with
      and without trust.
 
+8. **Image working directory:** add `mkdir -p /workspace` to the package
+   `RUN` step that already creates `/codex-home`, and keep
+   `WORKDIR /workspace`. The directory is then in a layer, root-owned with
+   mode 755, and Podman neither creates nor chowns it.
+   `tests/test_image_pins.py` rejects a `WORKDIR` that no build step
+   creates.
+
+   Alternatives considered:
+   - Move `WORKDIR` before the `COPY`, as in Claude. Rejected, because it
+     relies on a builder side effect.
+   - A separate `RUN mkdir`. Rejected, because it adds a layer.
+
 ## Risks / Trade-offs
 
 - [A read-only `/dev/shm` breaks tools that need POSIX shared memory, such
@@ -127,6 +160,10 @@ existing runtime suite.
   wrapper is fixed here; a shared defect stops the adoption.
 - [Every installation becomes stale] → The validation record and the README
   tell operators to rebuild and rerun setup.
+- [The workdir failure cannot be reproduced on this host, which has no
+  domain UID] → Verify that `/workspace` is in the exported layer and that
+  its time does not change when a container starts. The operator's Rocky
+  setup is the final check.
 
 ## Migration Plan
 

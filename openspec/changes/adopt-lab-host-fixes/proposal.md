@@ -14,6 +14,15 @@ such hosts it fails:
 - the terminal cannot attach;
 - the image build needs outbound port 80.
 
+After the first implementation, setup on the Rocky host still failed in the
+qualification gate. The error was "chowning container workdir to container
+root: potentially insufficient UIDs or GIDs" for `/workspace`, requested as
+`31600276:31600276`. The gate containers start without `--workdir`, and the
+Codex recipe declares `WORKDIR /workspace` as its last step before
+`ENTRYPOINT`. The directory is therefore in no image layer. Podman creates it
+at every container start and chowns it, and that chown fails for the
+operator's domain UID under `--userns=keep-id`.
+
 ## What Changes
 
 - **Adopt `sandbox-ref-11`** with `tools/propagate.py`: the shared `network/`,
@@ -38,6 +47,9 @@ such hosts it fails:
   - fetch Debian packages only over verified HTTPS, bootstrapped from the
     base image's Node.js roots plus the optional `build-ca` secret;
   - `.containerignore` admits `podman-build-secret*`;
+  - the package step creates `/workspace` (`mkdir -p /workspace`), so the
+    working directory exists in the image and Podman never creates or
+    chowns it at container start;
   - the pin tests reject plain-HTTP sources and disabled verification.
 - **Wrapper tests**:
   - fixtures for the shared-code imports and the controller query;
@@ -54,6 +66,9 @@ such hosts it fails:
   - budget values and validation;
   - the provider policy and profiles;
   - the guard's `/run/secrets` rule, kept exactly as in the reference.
+- **Not in scope:** passing `--workdir /` to the qualification gate
+  containers in `network/qualify.py`. It is shared code, so it goes into a
+  claude-container change with a new tag, propagated to every wrapper.
 
 ## Capabilities
 
@@ -80,7 +95,9 @@ None.
   - IPv6-less qualification;
   - the bootstrap admits only the read-only secrets mask;
   - the proxy skips unsupported address families.
-- `runtime-image`: HTTPS package sources and the pinned trust bootstrap.
+- `runtime-image`:
+  - HTTPS package sources and the pinned trust bootstrap;
+  - the image working directory exists in the image.
 
 ## Impact
 

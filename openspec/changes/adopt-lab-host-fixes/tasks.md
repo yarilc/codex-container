@@ -127,10 +127,35 @@
   co-author trailer, merge it into `main` with `--no-ff`, and verify that
   `git log --oneline -3` shows the merge.
 
+## 7. Image working directory
+
+- [x] 7.1 Add `mkdir -p /workspace` to the package `RUN` step in
+  `Containerfile`, next to `/codex-home` (design decision 8). Add a check in
+  `tests/test_image_pins.py`: a recipe whose `WORKDIR` no build step creates
+  fails. Verify that `python3 -m unittest tests.test_image_pins` passes and
+  that the mutated recipe is rejected.
+- [x] 7.2 Rebuild the runtime image and verify:
+  - `/workspace` appears in `podman export` of a freshly created container;
+  - a container started without `--workdir` shows the build time on
+    `/workspace`, not the start time;
+  - `tests.test_image_pins`, `bash tests/run-runtime.sh --qualification`
+    and `bash tests/run-runtime.sh` (`test_runtime.py`) pass with that
+    image.
+- [x] 7.3 Add the Rocky setup failure, its cause, the fix and the results of
+  7.1–7.2 to `docs/validation.md`. Commit on branch `fix-image-workdir`,
+  merge it into `main` with `--no-ff`, and verify that
+  `git log --oneline -3` shows the merge.
+
 ## Workflow follow-up
 
 - The operator pushes Codex `main`, then runs `--container-setup` (refresh
   approved) and a session on this host, the Rocky Linux 9 lab host and the
   newer WSL host. The results are added to `docs/validation.md`.
 - Sync the delta specs and archive this change after review.
-- OpenCode, Pi and Antigravity follow in their own changes.
+- OpenCode, Pi and Antigravity follow in their own changes. OpenCode and
+  Antigravity also need the image working-directory fix (decision 8),
+  because their recipes end with `WORKDIR /workspace` too.
+- Shared follow-up in claude-container: pass `--workdir /` in
+  `network/qualify.py` `Gate.common()`, so the gate containers never depend
+  on an image workdir. Publish it as `sandbox-ref-12` and propagate it to
+  Codex, OpenCode, Pi and Antigravity.

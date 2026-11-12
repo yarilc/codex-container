@@ -36,3 +36,18 @@ Before Debian `ca-certificates` is installed, the recipe SHALL verify HTTPS pack
 #### Scenario: Host CA bundle is not persisted
 - **WHEN** a user searches a container started from an image built with host CA trust enabled
 - **THEN** neither the bootstrap bundle nor the build secret is present in the image
+
+### Requirement: Image working directory exists in the image
+The runtime image SHALL contain its configured working directory `/workspace` in an image layer, owned by root with mode 755, so that a container started without `--workdir` never makes the engine create or chown it at start.
+
+#### Scenario: Container started without an explicit workdir
+- **WHEN** a qualification gate container starts from the runtime image without `--workdir`
+- **THEN** the engine uses the existing `/workspace` and performs no workdir creation or ownership change
+
+#### Scenario: Host with a large domain UID
+- **WHEN** the caller's UID, for example 31600276, cannot be used for an engine-side chown under `--userns=keep-id`
+- **THEN** qualification containers still start, because no workdir chown is needed
+
+#### Scenario: Recipe regression is rejected by tests
+- **WHEN** the recipe declares `WORKDIR /workspace` without creating `/workspace` in a build step
+- **THEN** the credential-free unit suite fails
