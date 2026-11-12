@@ -903,7 +903,7 @@ by "Engine-provided device mounts allow pseudo-terminals".
 | `tests/test_wrapper.py` | Passed: 74 tests, 1 skipped. With the previous launcher, the updated assertions fail (15 failures) |
 | `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 351 tests, 69 skipped (the runtime tests are opt-in) |
 | `bash tests/run-runtime.sh` (`test_runtime.py`, image `1ba1ef985c20`) | Passed: 15 tests, including `test_pseudo_terminals_and_device_masks`, `test_tmpfs_capacities_execution_and_exhaustion` and `test_tools_and_codex_sandbox_without_capabilities` |
-| Operator `--container-setup` and an interactive session on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator-reported, 2026-11-12) on all three hosts |
 
 Qualification digests the launcher, so restricted installations rerun
 `--container-setup`. The runtime image is unchanged.
