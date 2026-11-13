@@ -17,8 +17,9 @@
 - `network/` holds the shared restricted-session implementation (guard, proxy,
   relay, policy, platform checks, qualification and the `session.py` helper);
   `setup/` holds the shared guided setup (`setup.py`, `common.py`, `launch.py`,
-  `smoke.py`) and the `diagnostics.py` stderr filter; `docs/setup.md` documents
-  it.
+  `smoke.py`), the `diagnostics.py` stderr filter and the operator toolchain
+  library (`toolchains.py`, mounted read-only at `/toolchains`);
+  `docs/setup.md` documents it.
 
 ## Shared and agent-specific files
 
@@ -28,7 +29,7 @@
 `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`,
 `test_qualification.py`, `test_guard.py`, `test_session.py`,
 `test_network_feasibility.py` and their fixtures) are copied unchanged from
-`claude-container` at tag `sandbox-ref-12`. Never edit them here and never add an
+`claude-container` at tag `sandbox-ref-14`. Never edit them here and never add an
 agent identifier (`codex`, `openai`) to them: fix a defect in `claude-container`
 first, then copy the files again and update the manifest in
 `tests/test_reference_copy.py`. Codex values come only from `agent/`, the

@@ -907,3 +907,66 @@ by "Engine-provided device mounts allow pseudo-terminals".
 
 Qualification digests the launcher, so restricted installations rerun
 `--container-setup`. The runtime image is unchanged.
+
+## Adoption of `sandbox-ref-14` and the toolchain library (`adopt-sandbox-ref-14`): 2026-11-13
+
+Copied from `claude-container` tag `sandbox-ref-14` (commit `f06c885`):
+`network/agent_profile.py`, `network/control.py`,
+`network/qualification_records.py`, `setup/common.py`,
+`tests/test_alignment.py`, `tests/test_qualification.py`,
+`setup/toolchains.py`, `tests/test_toolchains.py`.
+The `tests/test_reference_copy.py` manifest moved to the tag.
+
+Wrapper port of the reference toolchain library (claude-container
+`add-toolchain-library`, commit `e45957f`):
+- `--container-toolchain add|list|remove|verify`, dispatched before the
+  network mode;
+- `CODEX_CONTAINER_TOOLCHAINS` and `CODEX_CONTAINER_TOOLCHAINS_DIR`;
+- the read-only `/toolchains` mount (`ro,nosuid,nodev`), with
+  `--mount-target /toolchains` in restricted modes;
+- default toolchain `PATH` entries appended after the image `PATH`.
+
+The README has a "Toolchains" section with the `AGENTS.md` instruction line;
+the example recipes are linked in claude-container.
+
+The first apply of this change adopted `sandbox-ref-13`. It was discarded
+before any commit: with that tag the shared `QualificationRuntime` fixture did
+not install `setup/`, and six `--qualification` tests failed. The reference
+fixed it in `sandbox-ref-14`. The wrapper port was carried over unchanged as a
+patch.
+
+`tests/run-runtime.sh` now mounts a private executable tmpfs at
+`/sandbox-test-tmp` as `SANDBOX_TEST_TMPDIR`, and `tests/test_wrapper.py`
+creates its fixtures there. Before, `--wrapper` failed (291 failures) because
+the image's world-writable `/tmp` is refused as an ancestor of the toolchain
+library.
+
+Fixture adaptations required by the new mount:
+- `tests/test_wrapper.py`:
+  - fixtures use a synthetic `HOME`;
+  - the root and home-workspace cases set `CODEX_CONTAINER_TOOLCHAINS=0`, or
+    expect the overlap stop;
+  - the volume list includes the library;
+  - the `readlink` resolver case omits the library.
+- `tests/test_runtime.py`: `test_real_worktrees` exposes a parent without the
+  synthetic home, and the nested caller passes `HOME`.
+
+| Check | Result |
+| --- | --- |
+| New `tests/test_wrapper.py` cases with the previous launcher | Failed as intended (dispatch, mount, private creation, unsafe library, disabled mount, appended `PATH`, restricted `--mount-target`, home workspace overlap) |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment tests.test_toolchains` (private tmpfs) | Passed |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 382 tests, 72 skipped |
+| `bash tests/run-runtime.sh --shared` | Passed: 160 tests, 28 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 71 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
+| `bash tests/run-runtime.sh --network` | Passed: 24 tests, 1 skipped, including a toolchain added on the host during an offline session, which became usable without direct network |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 80 tests (291 failures before the runner change) |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 17 tests, including archive and image sources, a failing check, the read-only mount, the image's `node` and `python3` kept first, and the omitted mount |
+| Five-wrapper parity table | Identical to claude-container's (`sandbox-ref-14`) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host, `java -version` with the Temurin 21 toolchain, and `--container-toolchain verify java21` | Pending (operator) |
+
+Runtime image: `localhost/codex-cli:setup-930356c8…` (the Containerfile is
+unchanged). Qualification digests the launcher and `setup/toolchains.py`, so
+restricted installations rerun `--container-setup`.
