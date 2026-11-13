@@ -278,7 +278,8 @@ alias codex=/absolute/path/to/codex-container.sh
 ```
 
 The wrapper handles `--container-build`, `--container-shell`,
-`--container-git-worktree`, and `--container-help`. Every other argument is
+`--container-git-worktree`, `--container-toolchain` (see [Toolchains](#toolchains))
+and `--container-help`. Every other argument is
 forwarded unchanged, so `codex --help`, `codex resume --last`, and other normal
 Codex invocations keep their original meaning.
 
@@ -460,7 +461,7 @@ build the image. Restricted failures never fall back to unrestricted
 networking. Offline sessions cannot reach the OpenAI API.
 
 The restricted implementation is shared with `claude-container` and copied
-unchanged from its tag `sandbox-ref-12`; see
+unchanged from its tag `sandbox-ref-14`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md). Every agent container, in every mode,
 drops all capabilities, enables no-new-privileges and receives the memory, CPU
@@ -735,6 +736,118 @@ root such as `/mnt/d`. Subdirectories such as `/mnt/d/Workspace/project` are
 allowed. Launch from a project directory, or set exactly
 `CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` to expose a refused directory
 deliberately; the wrapper then prints a warning.
+
+## Toolchains
+
+Sessions can use extra toolchains, such as Java, Go or Python, without Podman
+access, an unrestricted network or a rebuilt image. The operator keeps a
+toolchain library on the host. Every session sees it read-only, with `nosuid`
+and `nodev`, at `/toolchains`. The library is shared by the Claude, Codex,
+OpenCode, Pi and Antigravity wrappers. A toolchain adds no network, IPC or
+privilege capability: it runs under the same restrictions as the rest of the
+session.
+
+- **Location:** `${XDG_DATA_HOME:-~/.local/share}/sandbox-toolchains`, or
+  `CODEX_CONTAINER_TOOLCHAINS_DIR`. The launcher creates it private (`0700`)
+  when it is missing. It must stay outside the workspace, the Codex state
+  (`CODEX_HOME` or `CODEX_CONTAINER_STATE_DIR`) and the installation. A home
+  directory exposed as the workspace with
+  `CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` contains the default library, so
+  that launch stops. Move the library with `CODEX_CONTAINER_TOOLCHAINS_DIR`,
+  or omit it.
+- **Disable:** `CODEX_CONTAINER_TOOLCHAINS=0` (or `false`, `no`) starts a
+  session without the mount.
+- **Live updates:** a toolchain added or removed on the host appears in
+  running sessions without a restart.
+
+### Managing the library
+
+The operator runs these commands on the host; `--container-toolchain` must be
+the first argument:
+
+```bash
+codex --container-toolchain add java21.json   # install or replace from a recipe
+codex --container-toolchain list              # name, version, default, size, verified base
+codex --container-toolchain remove java21
+codex --container-toolchain verify [java21]   # rerun the checks on the current runtime image
+```
+
+- **Sources:** a toolchain is a relocatable directory tree, taken either from
+  a path inside an OCI image referenced by `@sha256:` digest, or from a local
+  archive with its SHA-256. The command never downloads archives.
+- **Pulls:** pulling a missing image requires exact
+  `CODEX_CONTAINER_MAINTENANCE=1`. Like image builds, the pull happens on the
+  host, outside runtime filtering.
+- **Extraction:** it rejects absolute paths, `..`, device nodes and links
+  that leave the toolchain, and clears setuid and setgid bits.
+- **Atomic changes:** changes take a library lock and replace directories
+  atomically.
+- **Check:** before accepting a toolchain, `add` runs the recipe's `check`
+  command in the Codex runtime image, without network and with the session's
+  identity and hardening. A toolchain that needs a newer C library than the
+  image's glibc fails here. The manifest records the base image from the
+  installed `Containerfile`. If that base changes, the toolchain stays visible
+  but loses its default environment until `verify` succeeds, and the launcher
+  prints one warning naming it. All five wrappers build from the same base, so
+  a toolchain verified by another wrapper keeps its default environment here.
+
+### Recipes
+
+A recipe is a JSON file that the operator keeps and reviews:
+
+| Key | Meaning |
+| --- | --- |
+| `schema`, `name`, `version` | `1`; `[a-z0-9][a-z0-9._-]*`; free version text |
+| `source` | `{"image": "<ref>@sha256:<digest>", "path": "/abs/path"}` or `{"archive": "/abs/file.tar.xz", "sha256": "<hex>", "strip_components": 1}` |
+| `path` | directories relative to the toolchain, added to `PATH` (default `["bin"]`) |
+| `env` | variables: `{"toolchain": "<relative path>"}` or `{"value": "<literal>"}` |
+| `requires` | other toolchains whose environment is loaded first |
+| `notes` | short instructions shown to the agent in `toolchains.md` |
+| `check` | command run in the runtime image before the toolchain is accepted |
+| `default` | `true` adds the toolchain to new sessions' environment |
+
+- **Protected variables:** recipes cannot set `PATH`, `HOME`, `CODEX_HOME`,
+  `CODEX_YOLO`, `OPENAI_API_KEY`, loader, proxy, CA or `CODEX_CONTAINER_*`
+  variables.
+- **Default toolchains:** in new sessions, their `PATH` entries come **after**
+  the image's. They never replace the runtime's own `node` or `python3`, which
+  Codex and the image tools use.
+- **Conflicts:** two default toolchains cannot share a command or a variable.
+  Install a second version with `"default": false` and use it through its
+  `env.sh`.
+- **Writable locations:** `/tmp`, `/var/tmp` and `/codex-home` are writable and
+  executable in Codex sessions, but discarded with the container; the workspace
+  and `/codex-home/.codex` persist. Recipes shared with other wrappers should
+  still point caches to `/tmp` with literal values, and keep notes such as
+  `GOTMPDIR` under the workspace, because `/tmp` is `noexec` in some of them.
+- **Dependency downloads** (Maven, npm, pip, Cargo, Go modules) need network
+  access that provider and offline modes do not grant. Provide dependencies in
+  the workspace, or use an unrestricted session.
+
+The verified example recipes (Temurin 21, Maven 3.9, Go, Node.js 24,
+Python 3.13 and Rust) are kept in the reference repository, in
+[`claude-container/docs/toolchains/`](https://github.com/yarilc/claude-container/tree/main/docs/toolchains),
+with their versions, digests, checksums and usage notes in its
+[README "Toolchains" section](https://github.com/yarilc/claude-container#toolchains).
+They do not depend on the agent.
+
+### Telling the agent
+
+The wrapper never edits `AGENTS.md` or other instruction files. The library
+contains a generated `/toolchains/toolchains.md` with the usage rules and every
+installed toolchain, plus a machine-readable `/toolchains/index.json`. Add one
+line to the project's `AGENTS.md` or to `$CODEX_HOME/AGENTS.md`:
+
+```markdown
+Read /toolchains/toolchains.md before using or looking for build tools.
+```
+
+The agent then runs a toolchain in one command with
+`. /toolchains/<name>/env.sh && <command>`. This form also works for
+toolchains added after the session started.
+
+SELinux and AppArmor enforcement were not tested with the library mount. On
+hosts that enforce them, profile the tools you add.
 
 ## Included Tools
 

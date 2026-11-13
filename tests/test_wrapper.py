@@ -7,7 +7,9 @@ import pty
 import shutil
 import signal
 import socket
+import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -33,6 +35,8 @@ elif args[0] == 'info' and args[-1] == '{{.Host.CgroupControllers}}':
     print(os.environ.get('FAKE_CONTROLLERS', '[cpu memory pids]'))
 elif args[0] == 'version':
     print(os.environ.get('FAKE_SERVER_VERSION', '4.9.3'))
+elif args[:2] == ['image', 'inspect'] and any('.Config.Env' in a for a in args):
+    print(os.environ.get('FAKE_IMAGE_ENV', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'))
 elif args[:2] == ['image', 'inspect']:
     print(os.environ.get('FAKE_IMAGE_ID', 'd' * 64))
 elif args[:2] == ['image', 'exists'] and args[-1] == os.environ.get('FAKE_EGRESS_IMAGE', '-'):
@@ -138,7 +142,7 @@ elif args[0] in ('run', 'start'):
 
 class WrapperTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix='codex-wrapper-')
+        self.tmp = tempfile.TemporaryDirectory(prefix='codex-wrapper-', dir=os.environ.get('SANDBOX_TEST_TMPDIR'))
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
         self.bin = self.base / 'bin'
@@ -154,7 +158,9 @@ class WrapperTests(unittest.TestCase):
                     if not k.startswith(('CODEX_', 'CONTAINER_', 'FAKE_'))}
         self.env.update(PATH=str(self.bin) + ':' + self.env['PATH'],
                         CODEX_HOME=str(self.state), FAKE_LOG=str(self.log),
-                        CODEX_CONTAINER_NETWORK='unrestricted', CODEX_CONTAINER_MAINTENANCE='1')
+                        CODEX_CONTAINER_NETWORK='unrestricted', CODEX_CONTAINER_MAINTENANCE='1',
+                        HOME=str(self.base / 'host-home'))
+        self.library = self.base / 'host-home/.local/share/sandbox-toolchains'
         self.sock = socket.socket(socket.AF_UNIX)
         self.sock_path = self.base / 'service.sock'
         self.sock.bind(str(self.sock_path))
@@ -391,7 +397,8 @@ class WrapperTests(unittest.TestCase):
     def test_root_prefix_and_numeric_upper_bound(self):
         # The root workspace is refused by default; the exact override keeps this prefix check reachable.
         result = subprocess.run(['bash', str(WRAPPER)], cwd='/',
-                                env=self.env | {'CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE': '1'},
+                                env=self.env | {'CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE': '1',
+                                                  'CODEX_CONTAINER_TOOLCHAINS': '0'},
                                 text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('codex-container-0', self.run_args())
@@ -793,8 +800,10 @@ reap_client
         resolver.chmod(0o755)
         for xdg in ('', None):
             self.env.pop('XDG_RUNTIME_DIR', None)
+            # The resolver also answers the launcher's own path lookup, so the
+            # installation-relative toolchain module is omitted here.
             env = {} if xdg is None else dict(XDG_RUNTIME_DIR=xdg)
-            result = self.run_wrapper(CODEX_CONTAINER_PODMAN='1', **env)
+            result = self.run_wrapper(CODEX_CONTAINER_PODMAN='1', CODEX_CONTAINER_TOOLCHAINS='0', **env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(selection.read_text(), f'/run/user/{os.getuid()}/podman/podman.sock')
 
@@ -859,7 +868,8 @@ reap_client
             args = self.run_args()
             self.assertEqual(args[args.index('--workdir') + 1], str(self.project))
             volumes = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == '--volume']
-            self.assertEqual(volumes, [f'{mount}:{mount}:rw', f'{self.state}:/codex-home/.codex:rw'])
+            self.assertEqual(volumes, [f'{mount}:{mount}:rw', f'{self.state}:/codex-home/.codex:rw',
+                                       f'{self.library}:/toolchains:ro,nosuid,nodev'])
             self.assertIn(f'{os.getuid()}:{os.getgid()}', args)
             self.assertNotIn('--read-only-tmpfs=false', args)
             self.assertEqual(sum(a == '--tmpfs' for a in args), 4)
@@ -1066,7 +1076,14 @@ reap_client
             with self.subTest(value=value):
                 self.assert_refused(self.run_wrapper(HOME=str(self.project),
                                                      CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE=value), self.project)
+        # An exposed home contains the default toolchain library, which must
+        # never be writable through the workspace: the launch stops first.
         result = self.run_wrapper(HOME=str(self.project), CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE='1')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('overlaps ' + str(self.project), result.stderr)
+        self.assertFalse(any(c[0] in ('create', 'build') for c in self.calls()))
+        result = self.run_wrapper(HOME=str(self.project), CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE='1',
+                                  CODEX_CONTAINER_TOOLCHAINS='0')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f'WARNING: sensitive workspace explicitly exposed read/write: {self.project}', result.stderr)
         self.assertIn(f'{self.project}:{self.project}:rw', self.run_args())
@@ -1081,6 +1098,105 @@ reap_client
             self.assertIn(text, result.stdout)
         self.assertEqual(self.calls(), [])
 
+    # Toolchain library
+
+    def volumes(self):
+        create = self.run_args()
+        return [create[i + 1] for i, a in enumerate(create) if a == '--volume']
+
+    def environment(self):
+        create = self.run_args()
+        return [create[i + 1] for i, a in enumerate(create) if a == '--env']
+
+    def test_toolchain_command_dispatch(self):
+        env = {k: v for k, v in self.env.items() if k != 'CODEX_CONTAINER_NETWORK'}
+        result = subprocess.run(['bash', str(WRAPPER), '--container-toolchain', 'list'], cwd=self.project, env=env,
+                                text=True, capture_output=True, timeout=25)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Toolchain library: ' + str(self.library), result.stdout)
+        self.assertIn('No toolchains are installed.', result.stdout)
+        self.assertEqual(self.calls(), [])
+        for args, message in ((('--version', '--container-toolchain', 'list'), 'must be the first argument'),
+                              (('--container-toolchain', 'launch-env'), 'usage'),
+                              (('--container-toolchain',), 'usage')):
+            with self.subTest(args=args):
+                result = self.run_wrapper(*args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(any(c[0] in ('create', 'build') for c in self.calls()))
+
+    def test_toolchain_library_created_private_and_mounted_read_only(self):
+        self.assertFalse(self.library.exists())
+        result = self.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(stat.S_IMODE(self.library.stat().st_mode), 0o700)
+        self.assertIn('No toolchains are installed', (self.library / 'toolchains.md').read_text())
+        self.assertIn(f'{self.library}:/toolchains:ro,nosuid,nodev', self.volumes())
+        self.assertFalse(any(e.startswith('PATH=') for e in self.environment()))
+
+    def test_unsafe_toolchain_library_stops_before_engine_operations(self):
+        self.library.mkdir(parents=True, mode=0o700)
+        os.chmod(self.library, 0o755)
+        isolated = self.base / 'isolated'
+        cases = [({}, str(self.library))]
+        cases += [({'CODEX_CONTAINER_TOOLCHAINS_DIR': str(path)}, str(path))
+                  for path in (self.project / 'tools', self.base, self.state / 'tools')]
+        cases.append(({'CODEX_HOME': '', 'CODEX_CONTAINER_STATE_DIR': str(isolated),
+                       'CODEX_CONTAINER_TOOLCHAINS_DIR': str(isolated / 'tools')}, str(isolated / 'tools')))
+        for env, path in cases:
+            with self.subTest(env=env):
+                result = self.run_wrapper(**env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(path, result.stderr)
+                self.assertFalse(any(c[0] in ('create', 'build', 'image', 'pull') for c in self.calls()))
+
+    def test_toolchain_mount_can_be_disabled(self):
+        for value in ('0', 'false', 'no'):
+            with self.subTest(value=value):
+                result = self.run_wrapper(CODEX_CONTAINER_TOOLCHAINS=value)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(any(v.endswith(':/toolchains:ro,nosuid,nodev') for v in self.volumes()))
+                self.assertFalse(self.library.exists())
+        result = self.run_wrapper(CODEX_CONTAINER_TOOLCHAINS='maybe')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('CODEX_CONTAINER_TOOLCHAINS', result.stderr)
+
+    def test_default_toolchain_environment_is_appended(self):
+        sys.path.insert(0, str(ROOT / 'setup'))
+        import toolchains
+        base = toolchains.base_reference(ROOT)
+        self.library.mkdir(parents=True, mode=0o700)
+        entry = {'version': '1', 'default': True, 'commands': ['tool'], 'requires': [], 'notes': [],
+                 'check': ['tool'], 'source': {}}
+        index = {'schema': 1, 'toolchains': [
+            {**entry, 'name': 'current', 'path': ['/toolchains/current/bin'],
+             'env': {'CURRENT_HOME': '/toolchains/current'}, 'verified': {'base': base, 'date': '2026-11-13'}},
+            {**entry, 'name': 'stale', 'path': ['/toolchains/stale/bin'], 'env': {},
+             'verified': {'base': 'docker.io/library/other@sha256:' + 'e' * 64, 'date': '2026-11-13'}}]}
+        (self.library / 'index.json').write_text(json.dumps(index))
+        result = self.run_wrapper(FAKE_IMAGE_ENV='PATH=/usr/bin:/bin\nNODE_VERSION=22')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        environment = self.environment()
+        self.assertIn('PATH=/usr/bin:/bin:/toolchains/current/bin', environment)
+        self.assertIn('CURRENT_HOME=/toolchains/current', environment)
+        self.assertFalse(any('/toolchains/stale' in e for e in environment))
+        self.assertEqual(result.stderr.count('toolchain stale was verified on another base image'), 1)
+        self.assertIn('verify stale', result.stderr)
+
+    def test_restricted_sessions_declare_the_toolchain_mount(self):
+        values = self.restricted_fixture()
+        for mode in ('offline', 'provider'):
+            with self.subTest(mode=mode):
+                result = self.run_wrapper(**(values | {'CODEX_CONTAINER_NETWORK': mode}))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                agent = next(c for c in self.calls() if c[0] == 'create'
+                             and not any(a.startswith('io.codex-container.egress=') for a in c))
+                volumes = [agent[i + 1] for i, a in enumerate(agent) if a == '--volume']
+                self.assertIn(f'{self.library}:/toolchains:ro,nosuid,nodev', volumes)
+                control = [c for c in self.calls() if c[0] == 'control.py']
+                self.assertTrue(any(c[i:i + 2] == ['--mount-target', '/toolchains']
+                                    for c in control for i in range(len(c) - 1)), control)
+
     # Restricted modes. Argument and lifecycle instrumentation only: the real
     # guard, platform and protected-path acceptance live in the runtime suites.
     def restricted_fixture(self):
@@ -1093,7 +1209,8 @@ reap_client
         guard.chmod(0o700)
         (guard.parent / 'sandbox-egress-guard.sha256').write_text('c' * 64 + '  sandbox-egress-guard\n')
         for name in ('network/session.py', 'network/agent_profile.py', 'network/agent_budgets.py', 'network/policy.py', 'network/revisions.py',
-                     'network/platform_check.py', 'network/proxy_hardening.py', 'agent/profile.json'):
+                     'network/platform_check.py', 'network/proxy_hardening.py', 'agent/profile.json',
+                     'setup/common.py', 'setup/toolchains.py', 'Containerfile'):
             (install / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, install / name)
         record = ("import json,os,pathlib,sys\n"
@@ -1461,7 +1578,7 @@ reap_client
         install.mkdir()
         self.wrapper = install / 'codex-container.sh'
         shutil.copyfile(WRAPPER, self.wrapper)
-        result = self.run_wrapper(FAKE_START_STDERR=restart)
+        result = self.run_wrapper(FAKE_START_STDERR=restart, CODEX_CONTAINER_TOOLCHAINS='0')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('level=error msg="Should restart: false"', result.stderr)
 

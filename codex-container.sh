@@ -32,6 +32,8 @@ Container options:
   --container-shell      open a shell instead of starting Codex
   --container-git-worktree mount the parent of the current physical directory
                          read/write; the container starts in the current directory
+  --container-toolchain  manage the shared read-only toolchain library; must be first:
+                         add <recipe.json> | list | remove <name> | verify [<name>]
   --container-help       show this wrapper help
 
 All other arguments are passed to Codex unchanged.
@@ -88,6 +90,10 @@ Environment:
                          (default: 0, disabled by default)
   CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE exact 1 permits a refused sensitive
                          workspace with a warning (default: disabled)
+  CODEX_CONTAINER_TOOLCHAINS 0, false, or no omits the read-only /toolchains
+                         library mount (default: mounted)
+  CODEX_CONTAINER_TOOLCHAINS_DIR toolchain library shared by the wrappers (default:
+                         ${XDG_DATA_HOME:-~/.local/share}/sandbox-toolchains)
   OPENAI_API_KEY         forwarded only to provider sessions using openai-api
                          or openai-api-docs
 
@@ -152,6 +158,13 @@ die() { printf 'codex-container: %s\n' "$*" >&2; exit 1; }
 for arg in "$@"; do
     [[ "$arg" != --container-help ]] || { usage; exit 0; }
 done
+# Toolchain management runs on the host and never starts a session.
+if [[ "${1:-}" == --container-toolchain ]]; then
+    [[ "${2:-}" != launch-env ]] || die 'usage: --container-toolchain add <recipe.json> | list | remove <name> | verify [<name>]'
+    command -v python3 >/dev/null || die 'host Python 3 is required for the toolchain library'
+    toolchain_script=$(readlink -f -- "${BASH_SOURCE[0]}")
+    exec python3 -I "$(dirname -- "$toolchain_script")/setup/toolchains.py" "${@:2}"
+fi
 for arg in "$@"; do
     if [[ "$arg" == --container-qualify ]]; then
         [[ $# == 1 ]] || die '--container-qualify must be used alone'
@@ -184,6 +197,7 @@ for arg in "$@"; do
         --container-build) build_image=1 ;;
         --container-shell) shell_mode=1 ;;
         --container-git-worktree) git_worktree=1 ;;
+        --container-toolchain) die '--container-toolchain must be the first argument' ;;
         *) args+=("$arg") ;;
     esac
 done
@@ -216,6 +230,7 @@ esac
 podman_access=0
 [[ "${CODEX_CONTAINER_PODMAN:-}" != 1 ]] || podman_access=1
 trust_host_ca=$(boolean CODEX_CONTAINER_TRUST_HOST_CA "${CODEX_CONTAINER_TRUST_HOST_CA:-}")
+toolchains_enabled=$(boolean CODEX_CONTAINER_TOOLCHAINS "${CODEX_CONTAINER_TOOLCHAINS:-1}")
 network_mode=$CODEX_CONTAINER_NETWORK
 case "$network_mode" in
     offline|provider|unrestricted) ;;
@@ -456,6 +471,34 @@ if ((trust_host_ca)); then
     fi
 fi
 
+# The operator's toolchain library is mounted read-only; the shared module
+# checks it stays private and outside every writable mount and the installation,
+# and lists the default toolchains verified for this runtime recipe.
+toolchain_library=''
+toolchain_path=''
+toolchain_env=()
+if ((toolchains_enabled && ! qualification_probe)); then
+    command -v python3 >/dev/null \
+        || die 'host Python 3 is required for the toolchain library; set CODEX_CONTAINER_TOOLCHAINS=0 to omit it'
+    toolchain_avoid=(--avoid "$workspace_mount")
+    if [[ -n "$state_dir" ]]; then
+        toolchain_avoid+=(--avoid "$state_dir")
+    else
+        toolchain_avoid+=(--avoid "$CODEX_DIR")
+    fi
+    toolchain_output=$(python3 -I "$script_dir/setup/toolchains.py" launch-env "${toolchain_avoid[@]}") \
+        || die 'toolchain library check failed; set CODEX_CONTAINER_TOOLCHAINS=0 to start without it'
+    while IFS=$'\t' read -r toolchain_kind toolchain_first toolchain_second; do
+        case "$toolchain_kind" in
+            library) toolchain_library=$toolchain_first ;;
+            path) toolchain_path+=":$toolchain_first" ;;
+            env) toolchain_env+=(--env "$toolchain_first=$toolchain_second") ;;
+            *) die 'unexpected toolchain library output' ;;
+        esac
+    done <<<"$toolchain_output"
+    [[ "$toolchain_library" == /* ]] || die 'toolchain library check returned no library'
+fi
+
 # Restricted sessions use the shared helper; this wrapper keeps only the
 # agent-specific command, environment, state and credentials.
 session_helper=(python3 -I "$script_dir/network/session.py")
@@ -465,6 +508,7 @@ guard_digest=''
 if [[ "$network_mode" != unrestricted ]]; then
     network_inputs=(--installation "$script_dir" --writable "$workspace_mount"
         --mount-target "$workspace_mount" --mount-target /codex-home)
+    [[ -z "$toolchain_library" ]] || network_inputs+=(--mount-target /toolchains)
     if [[ -n "$state_dir" ]]; then
         network_inputs+=(--writable "$state_dir")
     else
@@ -531,6 +575,18 @@ if [[ "$network_mode" != unrestricted ]]; then
     [[ "$engine_response" =~ ^(sha256:)?[a-f0-9]{64}$ ]] || die 'invalid restricted runtime image identity'
     IMAGE=$engine_response
 fi
+# Default toolchain entries follow the image PATH, so they never replace the
+# runtime's own node or python3; env.sh puts a toolchain first explicitly.
+if [[ -n "$toolchain_path" ]]; then
+    capture_engine_info image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$IMAGE" \
+        || die 'cannot inspect the runtime image environment'
+    image_path=''
+    while IFS= read -r image_variable; do
+        [[ "$image_variable" != PATH=* ]] || { image_path=${image_variable#PATH=}; break; }
+    done <<<"$engine_response"
+    [[ -n "$image_path" ]] || image_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    toolchain_env=(--env "PATH=$image_path$toolchain_path" "${toolchain_env[@]}")
+fi
 
 podman_args=(
     --rm --interactive
@@ -558,6 +614,9 @@ podman_args=(
     --volume "$workspace_mount:$workspace_mount:rw"
     "${state_mounts[@]}"
 )
+if [[ -n "$toolchain_library" ]]; then
+    podman_args+=(--volume "$toolchain_library:/toolchains:ro,nosuid,nodev" "${toolchain_env[@]}")
+fi
 ((run_timeout == 0)) || podman_args+=(--timeout "$run_timeout")
 if [[ -t 0 && -t 1 ]]; then
     podman_args+=(--tty)

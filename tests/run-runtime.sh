@@ -40,6 +40,8 @@ case "${1:-}" in
     *) set -- '' "$@" ;;
 esac
 shift
+# Wrapper fixtures need private, executable temporary storage: the image's
+# /tmp is world-writable, and the toolchain library refuses such ancestors.
 volume=$(podman volume create)
 cleanup() { podman volume rm --force "$volume" >/dev/null; }
 trap cleanup EXIT
@@ -58,6 +60,8 @@ podman run --rm --interactive --userns=keep-id --user "$(id -u):$(id -g)" \
     --volume "$native_root:$native_root:rw" \
     --volume "$host_socket:/run/podman/podman.sock:rw" \
     --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777 \
+    --mount type=tmpfs,destination=/sandbox-test-tmp,tmpfs-mode=0700,U=true,tmpfs-size=1g \
+    --env SANDBOX_TEST_TMPDIR=/sandbox-test-tmp \
     --workdir "$project_root" \
     --env CONTAINER_HOST=unix:///run/podman/podman.sock \
     "${runtime_environment[@]}" \
