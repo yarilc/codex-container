@@ -965,7 +965,7 @@ Fixture adaptations required by the new mount:
 | `bash tests/run-runtime.sh --wrapper` | Passed: 80 tests (291 failures before the runner change) |
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 17 tests, including archive and image sources, a failing check, the read-only mount, the image's `node` and `python3` kept first, and the omitted mount |
 | Five-wrapper parity table | Identical to claude-container's (`sandbox-ref-14`) |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host, `java -version` with the Temurin 21 toolchain, and `--container-toolchain verify java21` | Pending (operator) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host, `java -version` with the Temurin 21 toolchain, and `--container-toolchain verify java21` | Passed (operator-reported, 2026-11-13); `main` pushed |
 
 Runtime image: `localhost/codex-cli:setup-930356c8…` (the Containerfile is
 unchanged). Qualification digests the launcher and `setup/toolchains.py`, so
