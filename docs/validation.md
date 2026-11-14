@@ -970,3 +970,33 @@ Fixture adaptations required by the new mount:
 Runtime image: `localhost/codex-cli:setup-930356c8…` (the Containerfile is
 unchanged). Qualification digests the launcher and `setup/toolchains.py`, so
 restricted installations rerun `--container-setup`.
+
+## Adoption of `sandbox-ref-16`: 2026-11-14
+
+Copied from `claude-container` tag `sandbox-ref-16` (commit `1fa091e`):
+`setup/toolchains.py`, `tests/test_toolchains.py`.
+The `tests/test_reference_copy.py` manifest moved to the tag.
+
+- `sandbox-ref-15` protects every `XDG_` variable from toolchains, both in
+  `add` and in `launch-env`. Codex sets none, but the shared rule applies to
+  every wrapper.
+- `sandbox-ref-16` makes a comment agent-neutral.
+
+The README "Protected variables" bullet now names `XDG_` variables. The
+launcher and the wrapper tests are unchanged.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment tests.test_toolchains` (private tmpfs) | Passed |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 383 tests, 72 skipped |
+| `bash tests/run-runtime.sh --shared` | Passed: 160 tests, 28 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 71 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 80 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 17 tests |
+| Five-wrapper parity table | Identical to claude-container's (`sandbox-ref-16`) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+
+Runtime image: `localhost/codex-cli:setup-930356c8…`. `setup/toolchains.py`
+is qualified code, so restricted installations rerun `--container-setup`.
