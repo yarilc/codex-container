@@ -1000,3 +1000,39 @@ launcher and the wrapper tests are unchanged.
 
 Runtime image: `localhost/codex-cli:setup-930356c8…`. `setup/toolchains.py`
 is qualified code, so restricted installations rerun `--container-setup`.
+
+## Adoption of `sandbox-ref-17`: 2026-11-14
+
+Copied from `claude-container` tag `sandbox-ref-17` (commit `a23f155`):
+`setup/toolchains.py`, `tests/test_toolchains.py`.
+The `tests/test_reference_copy.py` manifest moved to the tag.
+
+`sandbox-ref-17` splits the protected toolchain variables into two groups:
+
+- **Neutral:** the same in every wrapper, now including
+  `DBUS_SESSION_BUS_ADDRESS`. `add` rejects them, and `launch-env` fails on
+  them.
+- **Profile:** Codex's own prefix, configuration, approval and credential
+  variables. `add` rejects them. When another wrapper's toolchain in the
+  shared index sets one, `launch-env` leaves it out of the session and prints
+  one warning naming the toolchain.
+
+The README "Protected variables" bullet describes both groups. The launcher
+reads only the standard output of `launch-env`, and the warnings go to
+standard error, so the launcher and the wrapper tests are unchanged.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment tests.test_toolchains` (private tmpfs) | Passed: 38 tests, 1 skipped |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 385 tests, 72 skipped |
+| `bash tests/run-runtime.sh --shared` | Passed: 160 tests, 28 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 71 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 80 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 17 tests. The first run in the sequence stopped without output during `test_concurrent_reservation_with_stopped_container` (exit 1, no failure reported); a rerun on its own passed |
+| Five-wrapper parity table | Identical to claude-container's (`sandbox-ref-17`) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+
+Runtime image: `localhost/codex-cli:setup-930356c8…`. `setup/toolchains.py`
+is qualified code, so restricted installations rerun `--container-setup`.
