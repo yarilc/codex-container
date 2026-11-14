@@ -1032,7 +1032,7 @@ standard error, so the launcher and the wrapper tests are unchanged.
 | `bash tests/run-runtime.sh --wrapper` | Passed: 80 tests |
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 17 tests. The first run in the sequence stopped without output during `test_concurrent_reservation_with_stopped_container` (exit 1, no failure reported); a rerun on its own passed |
 | Five-wrapper parity table | Identical to claude-container's (`sandbox-ref-17`) |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator-reported, 2026-11-14); `main` pushed |
 
 Runtime image: `localhost/codex-cli:setup-930356c8…`. `setup/toolchains.py`
 is qualified code, so restricted installations rerun `--container-setup`.
