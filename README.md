@@ -461,7 +461,7 @@ build the image. Restricted failures never fall back to unrestricted
 networking. Offline sessions cannot reach the OpenAI API.
 
 The restricted implementation is shared with `claude-container` and copied
-unchanged from its tag `sandbox-ref-14`; see
+unchanged from its tag `sandbox-ref-16`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md). Every agent container, in every mode,
 drops all capabilities, enables no-new-privileges and receives the memory, CPU
@@ -808,7 +808,8 @@ A recipe is a JSON file that the operator keeps and reviews:
 
 - **Protected variables:** recipes cannot set `PATH`, `HOME`, `CODEX_HOME`,
   `CODEX_YOLO`, `OPENAI_API_KEY`, loader, proxy, CA or `CODEX_CONTAINER_*`
-  variables.
+  variables, or any `XDG_` variable (a wrapper may place its state with
+  them).
 - **Default toolchains:** in new sessions, their `PATH` entries come **after**
   the image's. They never replace the runtime's own `node` or `python3`, which
   Codex and the image tools use.
