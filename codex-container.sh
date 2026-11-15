@@ -70,6 +70,7 @@ Environment:
   CODEX_HOME             Codex home on the host (default: ~/.codex)
   CODEX_CONTAINER_STATE_DIR optional isolated home mounted at /codex-home;
                          conflicts with a nonempty CODEX_HOME; no state is imported
+                         (must not be, contain or lie inside the workspace)
   CODEX_CONTAINER_TRUST_HOST_CA trust a host CA bundle: 1, true, or yes
                          (default: disabled)
   CODEX_CONTAINER_CA_BUNDLE CA bundle file to trust (default: first of
@@ -303,6 +304,13 @@ fi
 command -v podman >/dev/null || die "podman is not installed on the host"
 script_path=$(readlink -f -- "${BASH_SOURCE[0]}")
 script_dir=$(dirname -- "$script_path")
+# Isolated credentials and history must never land in, or contain, the workspace.
+# Compare physical paths; readlink -m also resolves a directory not created yet.
+if [[ -n "${CODEX_CONTAINER_STATE_DIR:-}" ]]; then
+    state_physical=$(readlink -m -- "$CODEX_CONTAINER_STATE_DIR")
+    [[ "$state_physical/" != "$workspace_mount/"* && "$workspace_mount/" != "$state_physical/"* ]] \
+        || die "CODEX_CONTAINER_STATE_DIR must not overlap the workspace: $CODEX_CONTAINER_STATE_DIR"
+fi
 IMAGE="${CODEX_CONTAINER_IMAGE:-localhost/codex-cli:latest}"
 container_prefix="${WORKSPACE##*/}"
 container_prefix="$(printf '%s' "$container_prefix" | sed -E 's/[^[:alnum:]_.-]+/-/g; s/^[.-]+//; s/[.-]+$//')"
@@ -661,6 +669,7 @@ session_start_pid=''
 diagnostics_pid=''
 diagnostics_fd=''
 ownership_label=io.codex-container.session
+owned_collision=0
 
 record_signal() {
     if ((pending_status == 0)); then
@@ -757,6 +766,29 @@ recover_container_id() {
     container_id=$recovered
 }
 
+# Without a published ID, find this session's container by its ownership label.
+# Exactly one ID whose label inspection confirms the token is adopted.
+recover_container_by_label() {
+    local ids owner
+    [[ -z "$container_id" && -n "$session_token" ]] || return 0
+    if ! ids=$(timeout --kill-after=1s 5s podman ps --all --no-trunc \
+        --filter "label=$ownership_label=$session_token" --format '{{.ID}}'); then
+        printf 'codex-container: Cannot look up the containers of session %s by label\n' "$session_token" >&2
+        return 1
+    fi
+    [[ -n "$ids" ]] || return 1
+    if [[ ! "$ids" =~ ^[a-f0-9]{64}$ ]]; then
+        printf 'codex-container: Unexpected containers for session %s; inspect the engine explicitly\n' "$session_token" >&2
+        return 1
+    fi
+    if ! owner=$(timeout --kill-after=1s 5s podman inspect --type container \
+        --format "{{index .Config.Labels \"$ownership_label\"}}" "$ids") || [[ "$owner" != "$session_token" ]]; then
+        printf 'codex-container: Cannot confirm ownership of container %s\n' "$ids" >&2
+        return 1
+    fi
+    container_id=$ids
+}
+
 cleanup() {
     local status=$? control_status shutdown_deadline
     trap '' TERM INT HUP
@@ -782,7 +814,9 @@ cleanup() {
         fi
         # The client can publish its CID while responding to cancellation.
         recover_container_id || true
-        if ((pending_status)) && [[ -z "$container_id" ]]; then
+        # The engine can create the container before the client publishes an ID.
+        [[ -n "$container_id" ]] || recover_container_by_label || true
+        if { ((pending_status)) || ((owned_collision)); } && [[ -z "$container_id" ]]; then
             printf 'codex-container: Creation outcome unresolved for %s (no verified owned ID); inspect the engine explicitly\n' "$name" >&2
         fi
     fi
@@ -927,7 +961,20 @@ for ((attempt=0; attempt<20; attempt++)); do
     podman container exists "$name" || exists_status=$?
     ((pending_status == 0)) || exit "$pending_status"
     case "$exists_status" in
-        0) next_index=$((next_index + 1)) ;;
+        0)
+            # Only another session's container is a collision; this session's own
+            # is reported as the creation failure and removed during cleanup.
+            owner_status=0
+            owner=$(podman inspect --type container --format "{{index .Config.Labels \"$ownership_label\"}}" "$name") \
+                || owner_status=$?
+            ((pending_status == 0)) || exit "$pending_status"
+            ((owner_status == 0)) || die "Cannot verify container name collision for $name (status $owner_status)"
+            if [[ "$owner" == "$session_token" ]]; then
+                owned_collision=1
+                creating=1
+                exit "$create_status"
+            fi
+            next_index=$((next_index + 1)) ;;
         1) exit "$create_status" ;;
         *) die "Cannot verify container name collision for $name (status $exists_status)" ;;
     esac

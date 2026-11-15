@@ -432,6 +432,10 @@ inside the isolated home. A simultaneous nonempty `CODEX_HOME` is a conflict
 error. The wrapper creates the home and its `.codex` privately, applies the
 same ownership and mode checks to both, never repairs permissions, and rejects
 `.codex` or the CA mount parent if a symbolic link resolves outside the home.
+The isolated home must not be the workspace, contain it or lie inside it (the
+parent directory in worktree mode), so credentials and history never land in a
+repository; the wrapper and the managed launcher refuse an overlap before any
+engine operation.
 
 ### Host CA trust
 
@@ -461,7 +465,7 @@ build the image. Restricted failures never fall back to unrestricted
 networking. Offline sessions cannot reach the OpenAI API.
 
 The restricted implementation is shared with `claude-container` and copied
-unchanged from its tag `sandbox-ref-17`; see
+unchanged from its tag `sandbox-ref-18`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md). Every agent container, in every mode,
 drops all capabilities, enables no-new-privileges and receives the memory, CPU
@@ -811,8 +815,10 @@ A recipe is a JSON file that the operator keeps and reviews:
   them) or `DBUS_SESSION_BUS_ADDRESS` (no session has a bus). These rules are
   the same in every wrapper. Each wrapper also protects its own variables:
   its prefix, configuration, approval and credential variables, such as
-  `CODEX_CONTAINER_*`, `CODEX_HOME`, `CODEX_YOLO` and `OPENAI_API_KEY` here.
-  `add` rejects them. If another wrapper installed a toolchain that sets one,
+  `CODEX_CONTAINER_*`, `CODEX_HOME`, `CODEX_YOLO` and `OPENAI_API_KEY` here,
+  and the agent's own variables that its profile lists in
+  `native.protected_env`. For Codex these are every `CODEX_` and `OPENAI_`
+  variable (for example `OPENAI_BASE_URL`). `add` rejects them. If another wrapper installed a toolchain that sets one,
   this wrapper leaves that variable out of its sessions and prints a warning
   naming the toolchain; the rest of the toolchain stays available.
 - **Default toolchains:** in new sessions, their `PATH` entries come **after**

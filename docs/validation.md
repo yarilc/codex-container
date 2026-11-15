@@ -1036,3 +1036,60 @@ standard error, so the launcher and the wrapper tests are unchanged.
 
 Runtime image: `localhost/codex-cli:setup-930356c8…`. `setup/toolchains.py`
 is qualified code, so restricted installations rerun `--container-setup`.
+
+## Adoption of `sandbox-ref-18`: 2026-11-15
+
+Copied from `claude-container` tag `sandbox-ref-18` (commit `958465b`):
+`network/agent_profile.py`, `setup/common.py`, `setup/toolchains.py`,
+`tests/test_agent_profile.py`, `tests/test_alignment.py`, `tests/test_setup.py`,
+`tests/test_toolchains.py`.
+The `tests/test_reference_copy.py` manifest moved to the tag.
+
+`sandbox-ref-18` adds the optional profile field `native.protected_env`, runs
+the toolchain check in `/`, refuses an isolated state directory that overlaps
+the workspace on managed launches, and makes the alignment test check the
+launcher's code and its help text separately. No Codex fixture needed
+adapting.
+
+Codex changes, from the cross-wrapper review of 2026-11-14:
+
+- **Agent variables:** `agent/profile.json` declares `CODEX_` and `OPENAI_`.
+  A default toolchain could previously set `OPENAI_BASE_URL` in Codex
+  sessions; `launch-env` now leaves it out with a warning.
+- **Name collisions (M2):** after a failed create without an ID, an existing
+  container with the candidate name is a collision only when its session
+  label differs. This session's own container is reported as the creation
+  failure and removed in cleanup, instead of being left behind while the
+  wrapper tried the next name.
+- **Label recovery (M2):** when creation was interrupted or failed without a
+  published ID, cleanup looks up the session label (`ps --all --no-trunc
+  --filter label=…`), confirms exactly one ID by inspecting its label, and
+  removes it. A failed lookup, several IDs or an unconfirmed label keep the
+  "Creation outcome unresolved" report.
+- **State inside the workspace (M3):** direct launches refuse a
+  `CODEX_CONTAINER_STATE_DIR` that is, contains or lies inside the workspace
+  (the parent in worktree mode), before any engine call. The usage text and
+  the README document it.
+
+The fake engine in `tests/test_wrapper.py` now answers the session-label
+lookup and label inspection. The new tests (`test_toolchain_cannot_set_codex_variables`,
+`test_owned_name_is_not_a_collision`, `test_interrupted_creation_is_recovered_by_label`,
+`test_state_overlapping_the_workspace_fails_without_engine`) fail on `main`
+and pass on the branch.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 393 tests, 73 skipped |
+| `bash tests/run-runtime.sh --shared` | Passed: 161 tests, 28 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 72 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` (not in the tool's checklist; shared `setup/` modules are qualified code) | Passed: 28 tests |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 84 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 17 tests |
+| Five-wrapper parity table | Identical to claude-container's (`sandbox-ref-18`) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+
+Runtime image: setup image `04133a4bc2e7`
+(`localhost/codex-cli:setup-930356c8…`), tagged `localhost/codex-cli:latest`
+only for the runs and untagged by name afterwards. Shared qualified code
+changes, so restricted installations rerun `--container-setup`.
