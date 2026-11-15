@@ -20,7 +20,8 @@
     "config_dir_env": "CODEX_HOME",
     "approval_bypass_env": "CODEX_YOLO",
     "config_home": ".codex",
-    "shared_dirs": []
+    "shared_dirs": [],
+    "protected_env": ["CODEX_", "OPENAI_"]
   },
   "auth": {
     "account": {
