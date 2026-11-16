@@ -1127,7 +1127,7 @@ run; the suite was rerun from the start.
 | `bash tests/run-runtime.sh --wrapper` | Passed: 85 tests |
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 17 tests |
 | `git diff --check`, `bash -n codex-container.sh` | Passed |
-| Operator `--container-setup` on the three hosts | Pending (operator, after all four adoptions) |
+| Operator `--container-setup` on the three hosts (`sandbox-ref-21`) | Passed (operator, 2026-11-16) |
 
 ## Lifetime notice clock (2026-11-16)
 
@@ -1167,6 +1167,6 @@ Runtime image: `localhost/codex-cli:setup-12c915b01d424f1391f37bdda7c344a7`; WSL
 | `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 411 tests, 71 skipped |
 | `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
 | `git diff --check` | Passed |
-| Operator `--container-setup` on the three hosts | Pending (operator, with the `sandbox-ref-20` adoption) |
+| Operator `--container-setup` on the three hosts (`sandbox-ref-21`) | Passed (operator, 2026-11-16) |
 
 Only shared test files changed: installations need no new setup for this tag.
