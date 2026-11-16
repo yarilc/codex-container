@@ -464,8 +464,8 @@ to keep today's networking, and `CODEX_CONTAINER_MAINTENANCE=1` to commands that
 build the image. Restricted failures never fall back to unrestricted
 networking. Offline sessions cannot reach the OpenAI API.
 
-The restricted implementation is shared with `claude-container` and copied
-unchanged from its tag `sandbox-ref-18`; see
+The restricted implementation is shared with `sandbox-container` and copied
+unchanged from its tag `sandbox-ref-20`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md). Every agent container, in every mode,
 drops all capabilities, enables no-new-privileges and receives the memory, CPU
@@ -838,9 +838,9 @@ A recipe is a JSON file that the operator keeps and reviews:
 
 The verified example recipes (Temurin 21, Maven 3.9, Go, Node.js 24,
 Python 3.13 and Rust) are kept in the reference repository, in
-[`claude-container/docs/toolchains/`](https://github.com/yarilc/claude-container/tree/main/docs/toolchains),
+[`sandbox-container/docs/toolchains/`](https://github.com/yarilc/sandbox-container/tree/main/docs/toolchains),
 with their versions, digests, checksums and usage notes in its
-[README "Toolchains" section](https://github.com/yarilc/claude-container#toolchains).
+[README "Toolchains" section](https://github.com/yarilc/sandbox-container#toolchains).
 They do not depend on the agent.
 
 ### Telling the agent
