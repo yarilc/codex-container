@@ -1082,8 +1082,8 @@ reap_client
                     self.assertFalse(any(c[0] == 'start' for c in self.calls()))
 
     def test_short_failure_across_a_second_boundary_has_no_lifetime_notice(self):
-        # Bash SECONDS counts whole seconds; a 0.3 s failing session crossing a
-        # second boundary must not be reported as a reached lifetime limit.
+        # Whole-second clocks would report a 0.3 s failing session crossing a
+        # second boundary as a reached lifetime limit.
         script = self.bin / 'podman'
         script.write_text(script.read_text().replace(
             'args = sys.argv[1:]\n', "args = sys.argv[1:]\nif os.environ.get('FAKE_SHORT_FAIL') and args"

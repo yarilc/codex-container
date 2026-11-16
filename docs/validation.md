@@ -1128,3 +1128,26 @@ run; the suite was rerun from the start.
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 17 tests |
 | `git diff --check`, `bash -n codex-container.sh` | Passed |
 | Operator `--container-setup` on the three hosts | Pending (operator, after all four adoptions) |
+
+## Lifetime notice clock (2026-11-16)
+
+The real-expiry lifetime notice was intermittently missing: about one run in ten
+of `test_session_lifetime_limit_and_early_exit` in `antigravity-container`, and
+once in the Codex `--network` suite, with exit status 255 but no notice. Bash
+`EPOCHREALTIME` follows the wall clock, and WSL2 steps it backwards to
+resynchronise with the host: in 30 raw `podman create --timeout 3` plus
+`podman start --attach` runs, the monotonic clock always measured at least
+3.9 s, while the wall clock measured 2.15 s once (a 1.84 s backward step).
+
+The launcher now measures the session from just before `podman create` with
+`/proc/uptime` (monotonic, centiseconds since boot), falling back to `SECONDS`
+only if `/proc/uptime` cannot be read. The threshold is unchanged: the notice
+appears when a failing session has lasted at least the limit.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_wrapper -k lifetime -k boundary -k timeout` (disposable container), 5 runs | Passed 5 of 5 |
+| `antigravity-container`: `bash tests/run-runtime.sh -k test_session_lifetime_limit_and_early_exit`, 10 runs | Passed 10 of 10 (before the fix: failed 2 of 10) |
+| `bash -n` on the launcher | Passed |
+
+No installed code, image or profile changes: installations need no new setup.
