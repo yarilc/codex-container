@@ -1002,7 +1002,16 @@ fi
 
 # Explicit redirection retains redirected stdin for the background client.
 attached=1
-started_at=$SECONDS
+# Measure the session at microsecond resolution: Bash's SECONDS counts whole
+# seconds, so a short failing session that crosses a second boundary would be
+# reported as a reached lifetime limit.
+elapsed_microseconds() {
+    local now=${EPOCHREALTIME:-}
+    now=${now//[!0-9]/}
+    [[ -n "$now" ]] || now=$((SECONDS * 1000000))
+    printf '%s' "$((10#$now - ${1:-0}))"
+}
+started_at=$(elapsed_microseconds)
 if [[ -f "$script_dir/setup/diagnostics.py" ]] && command -v python3 >/dev/null; then
     # Optional for unrestricted installs without host Python. Only the exact
     # successful Podman 4.3 restart-check line changes level; errors pass.
@@ -1025,7 +1034,7 @@ status=0
 wait "$client_pid" || status=$?
 ((pending_status == 0)) || exit "$pending_status"
 client_pid=''
-if ((run_timeout > 0 && status != 0 && SECONDS - started_at >= run_timeout)); then
+if ((run_timeout > 0 && status != 0 && $(elapsed_microseconds "$started_at") >= run_timeout * 1000000)); then
     printf 'codex-container: session lifetime limit reached (%s s); exit status %s\n' "$run_timeout" "$status" >&2
 fi
 exit "$status"

@@ -1093,3 +1093,38 @@ Runtime image: setup image `04133a4bc2e7`
 (`localhost/codex-cli:setup-930356c8…`), tagged `localhost/codex-cli:latest`
 only for the runs and untagged by name afterwards. Shared qualified code
 changes, so restricted installations rerun `--container-setup`.
+
+## Adoption of `sandbox-ref-20`: 2026-11-16
+
+`sandbox-container` is now the reference (it replaced `claude-container`).
+Copied from `sandbox-container` tag `sandbox-ref-20` (commit `d4fd4ca`) with
+`tools/propagate.py`: `network/README.md`, `network/agent_profile.py`,
+`network/policy.py`, `network/qualification_records.py`, `network/qualify.py`,
+`network/session.py`, `setup/common.py`, `setup/setup.py`, `setup/toolchains.py`,
+`tests/sandbox_profile.py`, `tests/test_agent_profile.py`, `tests/test_alignment.py`,
+`tests/test_guard.py`, `tests/test_qualification.py`, `tests/test_session.py`,
+`tests/test_setup.py` and the fixture profiles in `tests/fixtures/`. The
+`tests/test_reference_copy.py` manifest moved to the tag and names
+`sandbox-container` as its sibling. Per-agent: `tests/test_setup_wrapper.py`
+(copied from Claude), the lifetime notice measured with `EPOCHREALTIME` plus a
+boundary test (failed with the old launcher), documents pointing at
+`sandbox-container`, parity table fixed by hand.
+
+Runtime image: `localhost/codex-cli:setup-12c915b01d424f1391f37bdda7c344a7`
+(`04133a4bc2e7`); WSL2 6.6.87.2, Podman 4.9.3. The host crashed during the first
+run; the suite was rerun from the start.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 411 tests, 71 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 66 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
+| `bash tests/run-runtime.sh --network` | 24 tests, 1 skipped: `test_agent_budgets_are_effective_and_lifetime_cleans_owned_proxy` failed once (lifetime notice missing after a real 4 s expiry, status 255); passed in 2 of 2 isolated reruns. Recorded as a timing flake of the real-expiry notice |
+| `bash tests/run-runtime.sh --network-policy` | Passed: 15 tests |
+| `bash tests/run-runtime.sh --network-feasibility` | Passed: 1 test |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 85 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 17 tests |
+| `git diff --check`, `bash -n codex-container.sh` | Passed |
+| Operator `--container-setup` on the three hosts | Pending (operator, after all four adoptions) |
