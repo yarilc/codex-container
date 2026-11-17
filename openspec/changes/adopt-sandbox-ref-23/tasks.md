@@ -21,7 +21,7 @@
 
 ## 3. Codex tests and documentation
 
-- [ ] 3.1 Rewrite `tests/test_wrapper.py` with the shared `tests/fake_podman.py` and the real agent part (design decision 5). It covers:
+- [x] 3.1 Rewrite `tests/test_wrapper.py` with the shared `tests/fake_podman.py` and the real agent part (design decision 5). It covers:
   - the three hook cases;
   - the protected arguments in each mode;
   - `OPENAI_API_KEY` with each policy profile and mode, including a `CODEX_CONTAINER_ENV_VARS` attempt under `openai-account`;
