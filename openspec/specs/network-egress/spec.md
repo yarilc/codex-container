@@ -7,12 +7,16 @@ Let the operator select offline, provider-restricted or explicitly unrestricted 
 ## Requirements
 
 ### Requirement: Operator-selected runtime modes
-The wrapper SHALL accept `CODEX_CONTAINER_NETWORK=offline|provider|unrestricted` only from explicit operator configuration or the validated managed launcher. An ordinary launch with an unset or empty mode SHALL stop before engine calls, state creation or image operations. Other values SHALL fail before image operations. Only explicit `unrestricted` SHALL remove the runtime destination boundary. Agent-writable configuration SHALL NOT select or broaden the outer policy.
+The wrapper SHALL accept `CODEX_CONTAINER_NETWORK=offline|provider|unrestricted` from explicit operator configuration or the validated managed launcher. An ordinary launch with an unset or empty mode SHALL select `provider`, and SHALL stop with setup guidance before engine calls, state creation or image operations when the provider settings are missing. Other values SHALL fail before image operations. Only explicit `unrestricted` SHALL remove the runtime destination boundary. Agent-writable configuration SHALL NOT select or broaden the outer policy.
 
 #### Scenario: Missing and invalid selection
-- **WHEN** an ordinary invocation leaves the mode unset or empty
+- **WHEN** an ordinary invocation leaves the mode unset or empty without provider settings
 - **THEN** it exits nonzero with setup-required guidance naming `--container-setup` and `CODEX_CONTAINER_NETWORK`, before any engine call or state creation
 - **AND** an unknown nonempty mode fails with an invalid-mode diagnostic without image operations or agent startup
+
+#### Scenario: Provider by default
+- **WHEN** the mode is unset and the provider settings select a protected installation, policy and proxy image
+- **THEN** the session runs in provider mode with all provider requirements
 
 #### Scenario: Policy cannot escalate itself
 - **WHEN** workspace settings, `config.toml`, application state or commands request a broader policy or remove proxy variables
@@ -30,7 +34,7 @@ The wrapper SHALL accept `CODEX_CONTAINER_NETWORK=offline|provider|unrestricted`
 
 #### Scenario: Unrestricted keeps current behavior
 - **WHEN** an operator selects `unrestricted`
-- **THEN** the session has the networking, delegation and hardening behavior the wrapper had before this change, and needs no host Python, guard or qualification report
+- **THEN** the session has direct networking and optional delegation with the common launcher hardening, and needs no host Python, guard or qualification report
 
 #### Scenario: Qualification is not an ordinary session
 - **WHEN** `--container-qualify` runs with no effective mode
@@ -279,7 +283,13 @@ Provider mode SHALL require a named protected profile. `openai-api` SHALL allow 
 
 #### Scenario: API key reaches only the API profile
 - **WHEN** a provider session uses `openai-api` or `openai-api-docs` and the host sets `OPENAI_API_KEY`
-- **THEN** the key is passed to the container, while `openai-account` and offline sessions receive no API key from the wrapper
+- **THEN** the key is passed to the container by name
+- **AND** `openai-account`, operator-defined profiles, offline and unrestricted sessions receive no API key from the wrapper
+
+#### Scenario: Extra variables cannot carry the key to another method
+- **WHEN** `CODEX_CONTAINER_ENV_VARS` lists `OPENAI_API_KEY` in a provider session using `openai-account`
+- **THEN** the name is skipped with a notice
+- **AND** in an unrestricted session the listed key is forwarded by name
 
 #### Scenario: Documentation MCP with an extension profile
 - **WHEN** an operator selects `openai-account` or `openai-api-docs` and the shared configuration declares the OpenAI documentation MCP server
@@ -395,7 +405,7 @@ Restricted preparation SHALL require Linux x86_64, a rootless Podman server >= 4
 - **THEN** preparation fails before agent execution, names the failed prerequisite, and uses no local-engine, rootful, other-backend or unrestricted fallback
 
 ### Requirement: Credential-free local enforcement qualification
-`--container-qualify` SHALL run a bounded credential-free gate through the production launch and guard path and SHALL write a protected report. Required denial checks SHALL have positive controls or show enforcing syscall rejection. Missing fixtures, unrelated connectivity failure, skipped checks and unavailable transport evidence SHALL fail qualification.
+`--container-qualify` SHALL run a bounded credential-free gate through the production launch and guard path and SHALL write a protected report. The qualified code identity SHALL include the shared launcher core and the agent launcher part. Required denial checks SHALL have positive controls or show enforcing syscall rejection. Missing fixtures, unrelated connectivity failure, skipped checks and unavailable transport evidence SHALL fail qualification.
 
 #### Scenario: Mandatory IP and IPC controls
 - **WHEN** offline or provider mode is qualified
@@ -451,7 +461,7 @@ Each session proxy SHALL drop all capabilities, set no-new-privileges and have l
 - **THEN** affected outbound operations fail closed and cleanup preserves the primary exit status
 
 ### Requirement: Single protected agent profile
-All Codex-specific values used by the shared network components SHALL come from one data-only `agent/profile.json` and its provider policy file: wrapper and variable names, images, labels, installation and state names, native home, command and configuration variables, authentication methods and policy profiles. The profile SHALL be schema-validated, trusted-path checked and outside agent-writable mounts.
+All Codex-specific values used by the shared network, launcher and setup components SHALL come from one data-only `agent/profile.json` and its provider policy file. The agent launcher part SHALL mirror them for the launcher and SHALL be checked against them. They include wrapper and variable names, images, labels, installation and state names, native home, command, application path (`native.exec`), executable temporary storage (`native.exec_tmp`), configuration variables, authentication methods and policy profiles. The profile SHALL NOT select who builds the runtime image. It SHALL be schema-validated, trusted-path checked and outside agent-writable mounts.
 
 #### Scenario: Invalid or unprotected profile
 - **WHEN** the profile is missing, malformed, has duplicate or unknown keys, fails validation, or is reachable through a writable mount or escaped symlink
@@ -465,16 +475,24 @@ All Codex-specific values used by the shared network components SHALL come from 
 - **WHEN** the installed profile or policy differs from the one recorded in the current report
 - **THEN** ordinary restricted launches are refused with requalification guidance
 
+#### Scenario: Obsolete or mistyped launcher fields
+- **WHEN** the profile declares `install.runtime_build`, a relative `native.exec` or a non-boolean `native.exec_tmp`
+- **THEN** profile validation fails naming the field
+
 ### Requirement: Agent-neutral shared sandbox components
-The shared `network/` and `setup/` components and shared tests, including the compiled guard, SHALL contain no agent identifiers and SHALL stay byte-identical to the reference copies in `sandbox-container`, checked by the unchanged `tests/test_alignment.py` and the per-agent SHA-256 manifest. In-container paths, the guard name and the multiplex protocol marker SHALL be agent-neutral. Host-visible images, labels, variables and installation paths SHALL come from the profile.
+The shared `launcher/`, `network/` and `setup/` components and shared tests, including the compiled guard, `tests/test_launcher.py` and `tests/fake_podman.py`, SHALL contain no agent identifiers. They SHALL stay byte-identical to the reference copies in `sandbox-container`, checked by the unchanged `tests/test_alignment.py` and the per-agent SHA-256 manifest. In-container paths, the guard name and the multiplex protocol marker SHALL be agent-neutral. Host-visible images, labels, variables and installation paths SHALL come from the profile.
 
 #### Scenario: Shared component contains an agent identifier
-- **WHEN** a shared network or setup file contains an identifier declared by the profile outside the documented allow-list
+- **WHEN** a shared launcher, network or setup file contains an identifier declared by the profile outside the documented allow-list
 - **THEN** the credential-free alignment check fails
 
 #### Scenario: Shared component differs from the reference
 - **WHEN** a copied shared file differs from its SHA-256 recorded for the reference tag, or `diff -r` against a sibling `sandbox-container` checkout at that tag reports a difference
 - **THEN** the credential-free alignment check fails
+
+#### Scenario: Unlisted file in a shared directory
+- **WHEN** `launcher/` contains a file that the manifest does not list
+- **THEN** the reference-copy check fails naming the file
 
 #### Scenario: Two wrappers on the same host
 - **WHEN** Codex and another wrapper run restricted sessions or qualification concurrently
@@ -504,11 +522,12 @@ Host-side guard probes run by preparation and qualification SHALL NOT depend on 
 - **THEN** the probe result is captured and relayed, and preparation proceeds as from a terminal
 
 ### Requirement: Residual exfiltration disclosure
-Provider help, README and the network contract SHALL state that destination and SNI binding cannot distinguish the operator's credentials from attacker-supplied ones, so each allowed host can receive workspace data sent with a foreign API key or account. They SHALL name the hosts of each base and extension profile, state that only offline mode removes the channel, and SHALL NOT present host reduction as preventing it.
+Provider help, README and the network contract SHALL state that destination and SNI binding cannot distinguish the operator's credentials from attacker-supplied ones, so each allowed host can receive workspace data sent with a foreign API key or account. Help SHALL print the hosts of each base profile from the default policy. The README and the network contract SHALL also name the hosts of the `openai-api-docs` extension. They SHALL state that only offline mode removes the channel, and SHALL NOT present host reduction as preventing it.
 
 #### Scenario: Operator reads the provider limits
 - **WHEN** an operator reads the provider help, README or network contract
-- **THEN** the foreign-credential channel is described for `api.openai.com` and every other allowed host of the selected profile, including `developers.openai.com` for `openai-account` and `openai-api-docs`
+- **THEN** the foreign-credential channel is described for `api.openai.com` and every other allowed host of the selected profile, including `developers.openai.com` for `openai-account`
+- **AND** the README and the network contract also name `developers.openai.com` for `openai-api-docs`
 
 ### Requirement: Accurate provider identity documentation
 Provider help and the network contract SHALL distinguish CONNECT authorization, SNI binding of the initial and retried ClientHellos, and encrypted application routing. They SHALL state that matching SNI does not prove exclusive OpenAI communication, and SHALL name uninspected TLS 1.2 renegotiation as an accepted limitation. Credential-injecting interception SHALL be described as unimplemented.
@@ -585,3 +604,14 @@ The shared guard runtime test SHALL run the real Codex image with the wrapper's 
 #### Scenario: Agent command writes to its home
 - **WHEN** `bash tests/run-runtime.sh --guard` runs the production guard with the Codex image and its command creates directories under its native home
 - **THEN** the guarded production-container test passes without a read-only file system error
+
+### Requirement: Launcher files are protected restricted inputs
+The shared launcher core and the agent launcher part SHALL be part of the protected code identity recorded in local qualification reports. Restricted preflight SHALL require each of them to be a protected file. Any change to either SHALL invalidate matching qualification evidence.
+
+#### Scenario: Writable launcher core
+- **WHEN** `launcher/core.sh` or `agent/launcher.sh` in the installation is writable by others or reachable through a writable mount
+- **THEN** restricted preflight fails naming the file
+
+#### Scenario: Launcher core changed after qualification
+- **WHEN** `launcher/core.sh` or `agent/launcher.sh` differs from the one recorded in the report
+- **THEN** ordinary restricted startup requires requalification
