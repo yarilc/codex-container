@@ -18,6 +18,7 @@ The shared components are copied unchanged from `sandbox-container` at tag
 
 - `network/` (except the build output `network/bin/`);
 - `setup/`;
+- `launcher/` (the launcher core `launcher/core.sh`);
 - the shared tests listed in that tag's `tests/test_alignment.py`.
 
 The unchanged `tests/test_alignment.py` fails on a profile identifier (`codex`,
@@ -34,18 +35,25 @@ Intentional differences are limited to per-agent files:
 | --- | --- |
 | `agent/profile.json` | `codex-container`, prefix `CODEX_CONTAINER`, labels `io.codex-container.*`, images `localhost/codex-cli`, `localhost/codex-egress`, `localhost/codex-guard-toolchain`, home `/codex-home`, command `codex`, `CODEX_HOME`, `CODEX_YOLO`, no shared host directories |
 | `agent/policies/default.json` | `openai-api`, `openai-account` (with the documentation MCP host) and the `openai-api-docs` extension, revision `openai-2026-11-11-v1` |
-| `codex-container.sh` | Codex arguments, shared or isolated state layout, executable `/tmp`, `/var/tmp` and `/codex-home`, protected `--no-daemon` and `-c` overrides (including `sandbox_mode="danger-full-access"`) in restricted modes, API key only for `openai-api` and `openai-api-docs` |
+| `codex-container.sh` | The shared thin entry script; only the wrapper name in its comment differs |
+| `agent/launcher.sh` | Codex profile values for the core; `CODEX_YOLO` → `--yolo`; protected `--no-daemon -c sandbox_mode="danger-full-access"` in restricted modes and the ten `-c` optional-traffic overrides in provider mode; `OPENAI_API_KEY` only for `openai-api` and `openai-api-docs`; no executable temporary storage |
 | `Containerfile`, `.containerignore` | Codex image; copies `network/relay.py` and `network/mux.py` |
-| `tests/test_wrapper.py`, `test_runtime.py`, `test_network_runtime.py`, `network_tls_fixture.py`, `test_setup_runtime.py`, `run-runtime.sh`, `test_image_pins.py`, `test_reference_copy.py` | Codex names, synthetic Responses API fixture, OpenAI host inventories |
+| `tests/test_wrapper.py` (Codex's agent part), `test_setup_wrapper.py`, `test_runtime.py`, `test_network_runtime.py`, `network_tls_fixture.py`, `test_setup_runtime.py`, `run-runtime.sh`, `test_image_pins.py`, `test_reference_copy.py` | Codex names, synthetic Responses API fixture, OpenAI host inventories |
 
 ## Modes
 
 | Mode | Agent access | Socket delegation |
 | --- | --- | --- |
-| unset or empty | Launch stops with setup guidance before engine calls and state creation | No session |
+| unset or empty | `provider` (Codex's default); setup guidance without a protected installation or the saved provider settings | Rejected |
 | `offline` | Own loopback, pipes and connected socket pairs only | Rejected |
 | `provider` | As offline, plus one preconnected channel to an exact-destination proxy | Rejected |
 | `unrestricted` (explicit only) | Ordinary runtime networking | Exact opt-in allowed |
+
+A missing or empty mode selects `provider`; without the saved provider settings
+it stops with setup guidance before engine queries and state creation, and a
+managed empty override never restores the saved mode. Standalone qualification
+uses the same default mode and fixed protected controls; it cannot launch an
+arbitrary command. Maintenance consent never selects a mode.
 
 Unknown modes fail before image operations. Restricted failures never retry
 with unrestricted networking. Workspace and application settings, Codex's own
@@ -55,7 +63,7 @@ host/LAN/metadata access or proxy administration access. Every agent container,
 in every mode, drops all capabilities, enables no-new-privileges and has
 verified memory, CPU and process budgets.
 
-Restricted launches follow the Claude wrapper order: arguments; mode and
+Restricted launches follow the shared launcher core's order: arguments; mode and
 delegation; budgets and lifetime; engine verification; restricted platform
 queries; state; CA; `network/session.py prepare`; image operations under the
 maintenance gate; the immutable image ID; `network/qualify.py check`;

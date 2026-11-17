@@ -2,8 +2,13 @@
 
 ## Project Structure & Module Organization
 
-- `codex-container.sh` handles wrapper arguments, workspace mounts, user mapping,
-  container naming, and Podman socket validation.
+- `codex-container.sh` is the thin entry script, identical in every wrapper:
+  it sources the shared launcher core `launcher/core.sh` with Codex's agent
+  part `agent/launcher.sh` (profile values and three hooks: the `CODEX_YOLO`
+  help, the `--yolo` approval bypass and the protected Codex arguments). The
+  core owns argument parsing, mounts, user mapping, Podman checks and the
+  session lifecycle; `docs/launcher-contract.md` in `sandbox-container` is its
+  contract.
 - `Containerfile` defines the Codex runtime image and bundled tools.
 - `README.md` documents setup, usage, and security considerations.
 - `openspec/specs/` contains current behavior contracts; `openspec/changes/`
@@ -23,8 +28,9 @@
 
 ## Shared and agent-specific files
 
-`network/`, `setup/` and the shared tests listed in `tests/test_alignment.py`
-(`sandbox_profile.py`, `test_alignment.py`, `test_setup.py`,
+`network/`, `setup/`, `launcher/` and the shared tests listed in
+`tests/test_alignment.py` (`sandbox_profile.py`, `test_alignment.py`,
+`test_launcher.py`, `fake_podman.py`, `test_setup.py`,
 `test_agent_profile.py`, `test_network_policy.py`, `test_mux.py`,
 `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`,
 `test_qualification.py`, `test_guard.py`, `test_session.py`,
@@ -33,12 +39,12 @@
 agent identifier (`codex`, `openai`) to them: fix a defect in `sandbox-container`
 first, then copy the files again and update the manifest in
 `tests/test_reference_copy.py`. Codex values come only from `agent/`, the
-wrapper, `Containerfile`, `.containerignore` and the per-agent tests
-(`test_wrapper.py`, `test_runtime.py`, `test_network_runtime.py`,
+entry script, `Containerfile`, `.containerignore` and the per-agent tests
+(`test_wrapper.py` for Codex's agent part only, `test_setup_wrapper.py`, `test_runtime.py`, `test_network_runtime.py`,
 `network_tls_fixture.py`, `test_setup_runtime.py`, `test_image_pins.py`,
 `test_reference_copy.py`, `run-runtime.sh`). `tests/test_alignment.py` enforces
 the identifier scan and wrapper/profile consistency;
-`tests/test_reference_copy.py` enforces byte identity with the tag. The wrapper
+`tests/test_reference_copy.py` enforces byte identity with the tag. The core
 calls `network/session.py` (`prepare`, `start`, `agent-args`, `stop`) and never
 re-implements the restricted lifecycle inline.
 
@@ -49,12 +55,12 @@ Run from the repository root:
 ```bash
 bash ./codex-container.sh --container-setup  # Guided setup and managed launcher
 export CODEX_CONTAINER_NETWORK=unrestricted   # direct launches: offline/provider/unrestricted
-CODEX_CONTAINER_MAINTENANCE=1 ./codex-container.sh --container-build  # Build, then start
+CODEX_CONTAINER_MAINTENANCE=1 ./codex-container.sh --container-build  # Build only, then exit
 ./codex-container.sh                    # Start in the current workspace
 ./codex-container.sh --container-shell # Open Bash in the runtime image
 ./codex-container.sh --container-help  # Show wrapper options
 CODEX_CONTAINER_NETWORK=offline ./codex-container.sh --container-qualify  # Restricted gate
-bash -n codex-container.sh              # Check Bash syntax
+bash -n codex-container.sh launcher/core.sh agent/launcher.sh  # Check Bash syntax
 git diff --check                       # Check whitespace
 openspec validate --specs --strict      # Validate main specifications
 ```
@@ -90,51 +96,23 @@ State checks do not audit ancestors, ACLs, or every existing file.
 Use `--container-git-worktree` from a worktree root to expose its immediate
 physical parent while preserving the starting directory.
 
-Reject Unix launch paths consisting only of slash characters before any Podman
-query. Preserve response boundaries during verification: accept one launch
-record or two delegated-socket records with zero or one final LF, rejecting
-extra blank/nonblank records and CR characters before image operations.
-Preserve the complete delegated host path, including spaces, and keep query
-errors as failures even if their output looks valid. Normalize CODEX_YOLO
-words case-insensitively: 1/true/yes enable, unset/empty/0/false/no disable,
-and other values (including padded words) fail. Shell mode validates the value
-without adding Codex arguments. The exact Podman opt-in and native arguments
-remain independent.
+The launcher behavior (socket verification, YOLO parsing, naming, signals,
+creation recovery, cleanup, TTY handling, temporary storage, environment and
+image freshness) lives in the shared core and is tested once by
+`tests/test_launcher.py`; change it in `sandbox-container`, never here. In
+short: a signal starts shutdown at once within one 20-second deadline,
+`/tmp`, `/var/tmp`, `/run` and the shared-state home are `noexec` tmpfs mounts
+(512/512/32/512 MiB), images carry a `build-inputs-hash` label and a stale image
+is refused, and `--container-build` without Codex arguments builds and exits.
+Codex declares no executable temporary storage.
 
-Sessions reserve directory/index names atomically with create, using both
-running and stopped names. Parse one to nine decimal digits in base ten,
-propagate listing errors, and retry only confirmed collisions, at most 20 times.
-Track the created full ID and use it exclusively for signals and cleanup;
-never replace an existing container or clean up by a reusable name. Preserve
-application exit statuses including 125. Forward TERM/INT/HUP and return
-143/130/129 for wrapper interruptions. Reconcile pending creation before
-cleanup: allow five seconds for completion, then TERM with five seconds before
-KILL and one further second to observe client termination. Recover the full ID
-from the private CID record after cancellation; without verified ownership
-report unresolved creation and require explicit engine inspection. Cancellation
-does not prove the engine request stopped. Preserve the first interruption
-status and never renew deadlines for repeated signals. Report an unreapable
-client's PID instead of waiting indefinitely. Interrupted creation has up to
-17 seconds of separate phase budgets, excluding scheduling overhead.
-Bound graceful shutdown to five seconds and engine control calls to five
-seconds plus a one-second kill allowance. Local client cancellation allows
-five seconds after TERM plus one second after KILL. Report cleanup failures
-without overriding the primary status.
-SIGKILL and engine loss can leave residual containers.
-Allocate a TTY only when stdin and stdout are terminals, retaining redirected
-stdin and EOF. `/tmp` and `/var/tmp` are capped at 512 MiB each and `/run` at
-32 MiB, preserving permissions and executable temporary locations. These are per-mount maxima,
-not reserved memory or a container memory limit; ephemeral home has no explicit
-capacity. Build automatically only for image-existence status 1;
-other inspection errors stop startup. The default-deny `.containerignore`
-permits only the root Containerfile as an application input; future local
-COPY/ADD sources need deliberate inclusion.
-
-Setup is the first step for new users. Every ordinary launch requires a
-nonempty `CODEX_CONTAINER_NETWORK`, explicit or from the managed launcher; an
-unset or empty mode stops with `setup required:` guidance before engine queries
-or state creation. Restricted Codex launches add a protected
-`-c sandbox_mode="danger-full-access"` because Codex's own sandbox cannot start
+Setup is the first step for new users. An unset or empty
+`CODEX_CONTAINER_NETWORK` selects `provider`, Codex's default; without a
+protected installation or the saved provider settings (profile, policy, runtime
+directory, proxy image) the launch stops with `setup required:` guidance before
+engine queries or state creation, and explicit empty overrides never restore a
+saved mode. Restricted Codex launches add a protected
+`--no-daemon -c sandbox_mode="danger-full-access"` because Codex's own sandbox cannot start
 under the guard; never weaken the guard to make it work. Every image build,
 including the automatic build of a missing image, requires the exact
 `CODEX_CONTAINER_MAINTENANCE=1`. `offline` and `provider` reject
@@ -144,7 +122,7 @@ installation with the guard in `network/bin`, and a current qualification
 report; they run the image by its immutable ID and never fall back to
 unrestricted networking. Provider sessions add protected `-c` overrides for
 optional traffic before the user's arguments and forward `OPENAI_API_KEY` only
-for the exact `openai-api` profile. `CODEX_CONTAINER_STATE_DIR` selects an
+for the `openai-api` and `openai-api-docs` profiles of the default policy. `CODEX_CONTAINER_STATE_DIR` selects an
 isolated `/codex-home` and conflicts with a nonempty `CODEX_HOME`; host CA
 trust is opt-in and mounts one bundle read-only at `/codex-home/ca/bundle.pem`.
 
@@ -165,7 +143,7 @@ default/parent mounts, spaces, symlinks, and shell mode. With usable Podman,
 check image build, Codex startup, isolated `CODEX_HOME` persistence, local Git
 worktrees, and child-container bind mounts. Use disposable local repositories
 and configuration; record unavailable checks separately from mock results.
-Run `bash tests/run-runtime.sh --wrapper` for the wrapper suite in a runner
+Run `bash tests/run-runtime.sh --wrapper` for the shared launcher and wrapper suites in a runner
 container (the agent sandbox mounts `/tmp` noexec and cannot bind Unix sockets
 on its workspace), `--shared` for the copied shared suites and
 `tests/test_reference_copy.py`, and `--network-policy`, `--mux`,
@@ -174,7 +152,8 @@ on its workspace), `--shared` for the copied shared suites and
 real rootless acceptance modes. `--guard` and `--network` need the toolchain
 image `localhost/codex-guard-toolchain:development`; see `network/README.md`.
 Standard-library Python tests live in `tests/`. Run wrapper checks with
-`python3 -B -m unittest discover -s tests -p test_wrapper.py -v` and `test_image_pins.py`. Real runtime
+`python3 -B -m unittest discover -s tests -p test_launcher.py -v`,
+`-p test_wrapper.py -v` and `test_image_pins.py`. Real runtime
 checks require opt-in via `CODEX_RUNTIME_TESTS=1`, a built image, a same-host
 rootless service, and private host-visible `CODEX_TEST_ROOT`, or use
 `bash tests/run-runtime.sh` for disposable native Linux volume storage. Use a
