@@ -2,11 +2,11 @@
 
 ## Why
 
-`sandbox-ref-22` added the shared Bash launcher core (`launcher/core.sh`), and `sandbox-ref-23` removed the Claude identifiers from its shared tests. Claude already runs on the core. Codex still uses its own 1044-line `codex-container.sh`, a family-B launcher whose signal model, temporary storage and environment differ from the core's. Until Codex adopts the tag, its launcher keeps diverging from the reference, and the 72 Codex cases marked "to verify at adoption" in the reference test map stay open.
+`sandbox-ref-22` added the shared Bash launcher core (`launcher/core.sh`), and `sandbox-ref-23` removed the Claude identifiers from its shared tests. `sandbox-ref-24` reports an inaccessible state directory with the wrapper's diagnostic, a lost behavior this adoption found (task 2.3). Claude already runs on the core. Codex still uses its own 1044-line `codex-container.sh`, a family-B launcher whose signal model, temporary storage and environment differ from the core's. Until Codex adopts the tag, its launcher keeps diverging from the reference, and the 72 Codex cases marked "to verify at adoption" in the reference test map stay open.
 
 ## What Changes
 
-- Adopt `sandbox-ref-23` directly from `sandbox-ref-21` with `tools/propagate.py`. This copies `launcher/core.sh`, `tests/test_launcher.py`, `tests/fake_podman.py` and the launcher fixtures, plus the changed shared files (`network/*`, `setup/*`, `tests/test_alignment.py`, `tests/test_setup.py`, ...). It also moves the manifest and the current-state references to the tag. `tests/test_reference_copy.py` treats `launcher/` as a closed directory (lesson from the Claude adoption).
+- Adopt `sandbox-ref-24` from `sandbox-ref-21` with `tools/propagate.py`, in two steps: `sandbox-ref-21` to `sandbox-ref-23`, then `sandbox-ref-23` to `sandbox-ref-24` after the reference fix. This copies `launcher/core.sh`, `tests/test_launcher.py`, `tests/fake_podman.py` and the launcher fixtures, plus the changed shared files (`network/*`, `setup/*`, `tests/test_alignment.py`, `tests/test_setup.py`, ...). It also moves the manifest and the current-state references to the tag. `tests/test_reference_copy.py` treats `launcher/` as a closed directory (lesson from the Claude adoption).
 - Replace `codex-container.sh` with the thin entry script. The entry script is identical to the reference's apart from its name.
 - Add `agent/launcher.sh`, which holds the Codex profile data and three hooks:
   - `agent_command_args` adds, in offline and provider sessions only, the protected `--no-daemon -c sandbox_mode="danger-full-access"`. Provider sessions also get the ten protected `-c` overrides that disable optional traffic.
@@ -83,5 +83,5 @@
 - **Profile:** `agent/profile.json` needs a new field only if the adoption shows that Codex needs executable temporary storage (`native.exec_tmp`). It already uses the default `native.exec=/usr/local/bin/codex`.
 - **Qualification:** the qualification identity now includes the core and the agent part. Every installation needs `--container-setup` again, and the operator runs it on the three reference hosts.
 - **Other wrappers:**
-  - Antigravity and Pi adopt `sandbox-ref-23` in their own changes, and OpenCode after them.
+  - Antigravity and Pi adopt `sandbox-ref-24` in their own changes, and OpenCode after them.
   - If this adoption finds a lost behavior, a reference fix and a new tag come first.

@@ -41,13 +41,14 @@ In Codex and shell sessions, the wrapper SHALL cap the `/tmp` and `/var/tmp` tmp
 ## MODIFIED Requirements
 
 ### Requirement: Writable ephemeral runtime locations
-The wrapper SHALL provide writable temporary storage in `/tmp`, `/var/tmp`, `/run` and, without a writable isolated home, an ephemeral tmpfs home at `/codex-home` for the mapped runtime user. It SHALL mount persistent `CODEX_HOME` within that home and SHALL discard ephemeral session writes when the container is removed.
+The wrapper SHALL provide writable temporary storage in `/tmp`, `/var/tmp` and, without a writable isolated home, an ephemeral tmpfs home at `/codex-home` for the mapped runtime user. `/run` SHALL be an ephemeral tmpfs that the mapped runtime user cannot write. It SHALL mount persistent `CODEX_HOME` within that home and SHALL discard ephemeral session writes when the container is removed.
 
 #### Scenario: Temporary and home writes succeed
-- **WHEN** the mapped user creates files in the temporary locations and in `/codex-home` outside `.codex`
+- **WHEN** the mapped user creates files in `/tmp`, `/var/tmp` and in `/codex-home` outside `.codex`
 - **THEN** those writes succeed without changing the image filesystem
 - **AND** those files are absent in a fresh session
 - **AND** writes inside `.codex` remain persistent
+- **AND** a write to `/run` fails
 
 ### Requirement: Private persistent state directory
 Without `CODEX_CONTAINER_STATE_DIR`, the wrapper SHALL create missing `CODEX_HOME` privately, resolve its physical path, and require caller ownership, read/write/search access and no group/other permission bits. A set `CODEX_HOME` SHALL be an absolute path without colon, CR or LF, checked before any engine query. The default SHALL remain `${HOME}/.codex`, and validated state SHALL remain mounted read/write at `/codex-home/.codex` in Codex and shell modes. In restricted modes the validated state directory SHALL be declared writable to the protected-installation checks.

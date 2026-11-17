@@ -256,34 +256,41 @@ print('pty-and-masks-ok')
         self.assertLess(time.monotonic() - start, 24)
         self.assertEqual(self.session_names(), [self.project.name + '-08'])
 
-    def test_tmpfs_capacities_execution_and_exhaustion(self):
+    def test_tmpfs_capacities_noexec_and_exhaustion(self):
         script = '''python3 - <<'PYTHON'
-import errno, os, stat
-for path, expected in [('/tmp', 512 * 1024 * 1024), ('/var/tmp', 512 * 1024 * 1024),
-                       ('/run', 32 * 1024 * 1024)]:
+import errno, os, shutil, stat, subprocess
+for path, expected in [('/tmp', 512 << 20), ('/var/tmp', 512 << 20), ('/run', 32 << 20),
+                       ('/codex-home', 512 << 20)]:
     info = os.statvfs(path)
     assert info.f_blocks * info.f_frsize == expected, (path, info)
-    assert stat.S_IMODE(os.stat(path).st_mode) == 0o1777
     assert info.f_flag & os.ST_NOSUID
     assert info.f_flag & os.ST_NODEV
-for path in ('/tmp', '/var/tmp', '/codex-home'):
-    assert not os.statvfs(path).f_flag & os.ST_NOEXEC
+    assert info.f_flag & os.ST_NOEXEC, path
+    if path == '/run':
+        # Only /tmp, /var/tmp and the home are mode 1777 (contract L7).
+        assert not os.access(path, os.W_OK)
+        continue
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o1777
+    executable = os.path.join(path, 'codex-test-executable')
+    shutil.copy('/bin/true', executable)
+    os.chmod(executable, 0o755)
+    try:
+        subprocess.run([executable], check=True)
+    except PermissionError as error:
+        assert error.errno == errno.EACCES
+    else:
+        raise AssertionError('execution allowed from ' + path)
 try:
-    with open('/run/exhaust', 'wb', buffering=0) as target:
+    with open('/tmp/exhaust', 'wb', buffering=0) as target:
         block = b'x' * (1024 * 1024)
-        for _ in range(34): target.write(block)
+        for _ in range(514): target.write(block)
 except OSError as error:
     assert error.errno == errno.ENOSPC, error
 else:
-    raise AssertionError('/run exceeded its capacity')
+    raise AssertionError('/tmp exceeded its capacity')
 finally:
-    os.unlink('/run/exhaust')
+    os.unlink('/tmp/exhaust')
 PYTHON
-for directory in /tmp /var/tmp /codex-home; do
-    printf '#!/bin/sh\\nexit 0\\n' > "$directory/executable"
-    chmod +x "$directory/executable"
-    "$directory/executable" || exit 1
-done
 printf persistent > "$CODEX_HOME/capacity-sentinel"
 printf workspace > capacity-sentinel
 '''
@@ -292,15 +299,10 @@ printf workspace > capacity-sentinel
         self.assertEqual((self.state / 'capacity-sentinel').read_text(), 'persistent')
         self.assertEqual((self.project / 'capacity-sentinel').read_text(), 'workspace')
         self.assert_success(self.pipe_shell('''set -e
-test ! -e /run/exhaust
-test ! -e /tmp/executable
-test ! -e /var/tmp/executable
-python3 - <<'PYTHON'
-import os
-info = os.statvfs('/var/tmp')
-assert info.f_blocks * info.f_frsize == 536870912
-assert not info.f_flag & os.ST_NOEXEC
-PYTHON
+test ! -e /tmp/exhaust
+test ! -e /tmp/codex-test-executable
+test ! -e /var/tmp/codex-test-executable
+test ! -e /codex-home/codex-test-executable
 '''))
 
     def test_build_context_excludes_sensitive_and_unknown_inputs(self):
@@ -352,8 +354,7 @@ PYTHON
         self.assertEqual((self.project / 'owned-file').stat().st_gid, os.getgid())
 
     def test_state_and_all_ephemeral_locations(self):
-        paths = ['/tmp/codex-ephemeral', '/var/tmp/codex-ephemeral',
-                 '/run/codex-ephemeral', '/codex-home/codex-ephemeral']
+        paths = ['/tmp/codex-ephemeral', '/var/tmp/codex-ephemeral', '/codex-home/codex-ephemeral']
         create = '\n'.join(f'printf temporary > {shlex.quote(p)}' for p in paths)
         absent = '\n'.join(f'test ! -e {shlex.quote(p)}' for p in paths)
         self.assert_success(self.shell('printf persistent > "$CODEX_HOME/sentinel"\n' + create))

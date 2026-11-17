@@ -2,10 +2,9 @@
 
 `codex-container.sh` runs Codex CLI in a rootless Podman container. The
 image filesystem is read-only, with writable workspace, Codex state, and
-temporary storage. Every launch selects a network mode explicitly:
-`offline`, `provider` (only the OpenAI hosts of one protected profile) or
-`unrestricted` (ordinary networking, the previous behavior); see
-[Network modes](#network-modes). In `unrestricted` mode, set
+temporary storage. A launch runs in one network mode: `provider` (the
+default; only the OpenAI hosts of one protected profile), `offline` or
+`unrestricted` (ordinary networking); see [Network modes](#network-modes). In `unrestricted` mode, set
 `CODEX_CONTAINER_PODMAN=1` to expose the host Podman socket and let Codex launch
 containers for tests and builds. The Podman command remains installed in every
 mode.
@@ -211,11 +210,10 @@ CODEX_CONTAINER_MAINTENANCE=1 ./codex-container.sh --container-build
 CODEX_YOLO=1 ./codex-container.sh
 ```
 
-Every ordinary launch needs a nonempty `CODEX_CONTAINER_NETWORK`, explicit or
-supplied by the managed launcher. An unset or empty mode stops with
-`setup required:` guidance before any engine call or state creation;
-`unrestricted` keeps the previous networking behavior. Unknown values
-fail before image operations.
+An unset or empty `CODEX_CONTAINER_NETWORK` selects `provider`, the default for
+an agent wrapper. Without a protected installation or the provider settings
+that setup saves, the launch stops with `setup required:` guidance before any
+engine call or state creation. Unknown values fail before image operations.
 
 Every image build is maintenance: `--container-build` and the automatic build
 of a missing image both require the exact `CODEX_CONTAINER_MAINTENANCE=1`, in
@@ -229,6 +227,16 @@ container registries, not port 80. With host CA trust enabled, the selected
 bundle is also passed to the build as the `build-ca` secret, so the package
 fetches verify on TLS-intercepting networks; it is never stored in a layer. Host pulls and build `RUN` steps happen outside
 runtime network filtering.
+
+A build pulls the exact `FROM` base first and then runs with `--pull=never`
+and the docker format, without a timeout. Every image carries a
+`build-inputs-hash` label over its build inputs (`Containerfile`,
+`.containerignore`, `network/relay.py`, `network/mux.py`); a launch refuses an
+image built from other inputs and names the rebuild command.
+`--container-build` without Codex arguments, also together with
+`--container-git-worktree` or `--container-shell`, validates every setting,
+builds the image and exits without a session; setup uses this operation. With
+Codex arguments, it builds and then starts the session.
 
 The default-deny `.containerignore` admits only `Containerfile`,
 `.containerignore` and the two relay inputs `network/relay.py` and
@@ -283,41 +291,36 @@ and `--container-help`. Every other argument is
 forwarded unchanged, so `codex --help`, `codex resume --last`, and other normal
 Codex invocations keep their original meaning.
 
-Each container is named from the last component of the physical current directory
-and the next highest supported numeric index among running and stopped
-containers, for example `codex-container-0`, `codex-container-1`. Suffixes of
-one to nine decimal digits count (`08` means eight); malformed or longer
-suffixes are ignored. Enumeration errors stop startup. Creation reserves the
-name atomically, with at most 20 attempts for confirmed collisions. Other
-creation or collision-check errors stop startup without replacing any container.
+Each container reserves a name from the physical current directory and the
+next numeric index among all existing instances, for example
+`codex-container-0` and `codex-container-1`. Suffixes of one to nine decimal
+digits count (`08` means eight). Concurrent name collisions are retried up to
+20 times; existing sessions are never deleted to free a name. INT, TERM, and
+HUP are forwarded to the owned container. The wrapper preserves process exit
+codes (including 125) and removes only its own container at termination.
 
-The wrapper tracks the full ID of the container it created and attempts cleanup
-on exit, failed startup, or handled interruption. It never removes another
-container to obtain a name. Application exit codes, including 125, pass through
-without retrying execution, and cleanup failures do not replace that status.
-TERM, INT, and HUP sent to the wrapper are forwarded to its running container;
-wrapper interruption exits are 143, 130, and 129 respectively. A signal during
-creation allows up to five seconds for the client to finish, then sends TERM
-to the local client, allows up to five more seconds before KILL, and allows
-one further second to observe termination. The wrapper then recovers any full
-owned ID from its private CID file and attempts removal without starting the
-application. The first signal selects the interruption status; repeated signals
-do not renew deadlines or replace that status. A client that cannot be reaped
-within its limit is reported rather than waited on indefinitely.
+A signal starts shutdown at once, also while the container is being created.
+Shutdown has one 20-second budget. After forwarding a signal, the wrapper allows
+at most 5 seconds for graceful exit, then attempts forced removal with Podman's
+stop wait set to zero. Shutdown engine calls have a 2-second soft timeout and
+at most 1 further second before forced client termination, capped by the remaining
+overall budget. Local create/attach clients are also terminated and reaped within
+that budget. Normal application and build durations are unrestricted.
 
-After forwarding a signal, graceful shutdown allows up to five seconds before
-forced removal. Engine control commands have five-second deadlines (plus a
-one-second forced termination allowance); local client cancellation allows
-five seconds after TERM and one further second after KILL. These are separate
-phases, not a five-second total deadline.
-SIGKILL, host failure, or engine loss can leave residual containers; failed
-cleanup reports the owned ID for explicit removal. Cancelling the local client
-does not prove the engine stopped creating the container. Without a verified
-owned ID, the wrapper reports an unresolved creation outcome and requires
-explicit engine inspection; it never removes by a guessed name. Interrupted
-creation budgets up to 17 seconds across completion, client cancellation/reaping,
-and removal, excluding scheduling overhead. Uninterrupted creation has no new
-timeout. Normal engine auto-removal remains enabled.
+The first terminal signal selects status 143 (TERM), 130 (INT), or 129 (HUP);
+later signals do not restart shutdown. Otherwise the application's exit status
+is retained, including zero and 125, even if cleanup fails. Failures are reported
+on stderr with the known container ID or session ownership label. If the engine
+cannot confirm removal, inspect that identity on the host with `podman inspect`
+or filter `podman ps --all --filter label=io.codex-container.session=SESSION`,
+replacing `SESSION` with the reported session token.
+Only remove a confirmed session container. A disconnected engine can finish
+creation after bounded recovery ends; a warning does not mean it was removed.
+SIGKILL, host failure, or engine loss can leave residual containers.
+
+Private per-attempt CID files and a unique session label support recovery when
+creation is interrupted before its client returns an ID. A workspace name alone
+never authorizes removal, and interrupted creation never starts the application.
 
 Both Codex and shell modes allocate a TTY only when stdin and stdout are
 terminals. Pipes, file input, and redirected output retain stdin forwarding and
@@ -327,7 +330,21 @@ need one. For example, run shell commands from a file:
 ```bash
 printf 'pwd\nexit 0\n' | ./codex-container.sh --container-shell
 ./codex-container.sh --container-shell < commands.sh > session.log
+./codex-container.sh --container-shell -c 'make test'
 ```
+
+Shell mode passes its arguments to Bash and never adds Codex arguments or the
+YOLO flag. `--container-help` requires no engine and creates no state.
+
+The session receives `USER`, `EDITOR=nano` and `VISUAL=nano`, and by name
+`TERM`, `COLORTERM`, `LANG` and `LC_ALL` when set. Unrestricted sessions also
+receive `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and their
+lowercase forms, run with `--init`, and see their container name as
+`CONTAINER_NAME`. `CODEX_CONTAINER_ENV_VARS` lists further host variable names
+(separated by whitespace) to forward by name, never by value; an invalid name
+stops the launch, an empty variable is not forwarded, and names the launcher
+sets itself (and, in restricted modes, proxy, CA and provider settings, or in
+provider mode another profile's credential) are skipped with a notice.
 
 `CODEX_YOLO=1` starts Codex with `--yolo`, disabling approvals and sandboxing.
 `CODEX_YOLO` accepts `1`, `true`, and `yes` to enable it, and unset, empty,
@@ -394,8 +411,11 @@ CODEX_HOME="$HOME/.local/share/codex-container/state" ./codex-container.sh
 
 Two invocations using the same directory share state; state is not selected
 automatically per project. Changing `CODEX_HOME` selects different settings
-and sessions without copying existing data. Inside the container it is always
-`/codex-home/.codex`; the rest of `/codex-home` is ephemeral.
+and sessions without copying existing data. A nonempty `CODEX_HOME` must be an
+absolute path without colon, CR or LF; the wrapper checks it before any engine
+operation. Inside the container it is always `/codex-home/.codex`; the rest of
+`/codex-home` is an ephemeral 512 MiB `noexec` tmpfs whose files disappear with
+the session.
 
 Before any image operation or startup, the wrapper creates missing state
 with mode `0700`, resolves its physical path, and requires caller ownership,
@@ -417,6 +437,12 @@ These checks protect access to the selected directory; they do not encrypt
 state or audit all ancestors, ACLs, or existing files. The agent can read and
 write the mounted state. Removing a container does not remove it.
 
+`CODEX_CONTAINER_READONLY_STATE` (`1`, `true` or `yes`) mounts the existing
+Codex configuration read-only instead, from shared state or from the isolated
+home; the directory must exist and be accessible, nothing is created, and the
+isolated home itself is not mounted. Codex cannot save sign-ins or sessions in
+such a launch.
+
 For a fully isolated application home, set `CODEX_CONTAINER_STATE_DIR`
 instead of `CODEX_HOME`:
 
@@ -425,9 +451,9 @@ unset CODEX_HOME
 CODEX_CONTAINER_STATE_DIR="$HOME/.local/share/codex-container/isolated" ./codex-container.sh
 ```
 
-The directory is mounted read/write at `/codex-home` (with
-`CODEX_HOME=/codex-home/.codex`), so caches and other home data persist with
-it. The shared `~/.codex` is neither mounted nor imported: sign in again
+The directory, which must be an absolute path without colon, CR or LF, is
+mounted read/write at `/codex-home` (with `CODEX_HOME=/codex-home/.codex`), so
+caches and other home data persist with it. The shared `~/.codex` is neither mounted nor imported: sign in again
 inside the isolated home. A simultaneous nonempty `CODEX_HOME` is a conflict
 error. The wrapper creates the home and its `.codex` privately, applies the
 same ownership and mode checks to both, never repairs permissions, and rejects
@@ -454,18 +480,19 @@ certificate directory is never mounted.
 
 | `CODEX_CONTAINER_NETWORK` | Agent network access | Host Podman delegation |
 | --- | --- | --- |
-| unset or empty | Launch stops with setup guidance before engine calls and state creation | No session |
+| unset or empty | `provider`; without setup's saved provider settings the launch stops with setup guidance | Rejected |
 | `offline` | Own loopback, pipes and connected socket pairs only | Rejected |
 | `provider` | As offline, plus one preconnected channel to an exact-destination proxy | Rejected |
-| `unrestricted` | Ordinary runtime networking (the previous behavior) | Exact opt-in allowed |
+| `unrestricted` | Ordinary runtime networking | Exact opt-in allowed |
 
-**Migration.** Existing launches must add `CODEX_CONTAINER_NETWORK=unrestricted`
-to keep today's networking, and `CODEX_CONTAINER_MAINTENANCE=1` to commands that
-build the image. Restricted failures never fall back to unrestricted
-networking. Offline sessions cannot reach the OpenAI API.
+First-run setup proposes `provider` and saves the selected mode for its managed
+launcher. Operators can explicitly choose `offline` for prepared restricted
+sessions or `unrestricted` for broad networking; commands that build the image
+also need `CODEX_CONTAINER_MAINTENANCE=1`. Restricted failures never fall back
+to unrestricted networking. Offline sessions cannot reach the OpenAI API.
 
 The restricted implementation is shared with `sandbox-container` and copied
-unchanged from its tag `sandbox-ref-21`; see
+unchanged from its tag `sandbox-ref-24`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md). Every agent container, in every mode,
 drops all capabilities, enables no-new-privileges and receives the memory, CPU
@@ -552,6 +579,13 @@ bash ./codex-container.sh
 | `openai-api` | `api.openai.com:443` | `OPENAI_API_KEY`, forwarded only to this profile |
 | `openai-account` | `auth.openai.com:443`, `chatgpt.com:443`, `developers.openai.com:443` | ChatGPT sign-in stored in `CODEX_HOME`, plus the OpenAI documentation MCP |
 | `openai-api-docs` | `api.openai.com:443`, `developers.openai.com:443` | As `openai-api`, plus the OpenAI documentation MCP |
+
+A host `OPENAI_API_KEY` is forwarded by name only to provider sessions with
+`openai-api` or `openai-api-docs`, never with `openai-account` or an operator
+profile; offline and unrestricted sessions get no key unless
+`CODEX_CONTAINER_ENV_VARS` lists it in unrestricted mode. No key is copied into
+the image or policy. Provider help lists the hosts of the two base profiles from
+the default policy.
 
 `developers.openai.com` serves the OpenAI documentation MCP server
 (`codex mcp add openaiDeveloperDocs --url https://developers.openai.com/mcp`).
@@ -642,18 +676,19 @@ in `unrestricted`. The measurements are in
 
 Both Codex and shell sessions use a read-only image root filesystem. The
 workspace and persistent Codex state remain writable host binds. `/tmp`,
-`/var/tmp`, `/run`, and `/codex-home` use writable temporary filesystems;
-files there are discarded when the container is removed, except for the
-nested persistent mount at `/codex-home/.codex`. Temporary build artifacts
-can execute in `/tmp`, `/var/tmp`, and `/codex-home`.
+`/var/tmp` and `/codex-home` (in shared state) use writable temporary
+filesystems; files there are discarded when the container is removed, except
+for the nested persistent mount at `/codex-home/.codex`. `/run` is a temporary
+filesystem the session user cannot write.
 
-`/tmp` and `/var/tmp` each have a 512 MiB maximum and `/run` a 32 MiB maximum.
-All three retain mode 1777, `nosuid`, and `nodev`; `/tmp` and `/var/tmp` retain
-executable storage and `/run` keeps its existing execution policy. These are
-per-mount capacities, not reserved memory or a total container memory limit.
-Ephemeral home has no explicit capacity imposed by this policy. Writes can fail
-when a bounded mount fills; workspace and persistent state remain separate host
-storage.
+`/tmp`, `/var/tmp` and the shared-state home each have a 512 MiB maximum and
+`/run` a 32 MiB maximum, the same in every wrapper. All four are `nosuid`,
+`nodev` and `noexec`: nothing written there can be executed, so build and test
+artifacts that must run belong in the workspace. `/tmp`, `/var/tmp` and the home
+keep mode 1777; `/run` does not. These are per-mount capacities, not reserved memory or a total
+container memory limit. Writes can fail when a bounded mount fills; workspace
+and persistent state remain separate host storage. In delegated sessions, nested
+Podman gets its own private tmpfs storage.
 
 Podman 5 with crun 1.27 cannot attach a terminal when `/dev` is read-only, so
 the wrapper keeps automatic read-only tmpfs provisioning. The engine provides
@@ -827,11 +862,10 @@ A recipe is a JSON file that the operator keeps and reviews:
 - **Conflicts:** two default toolchains cannot share a command or a variable.
   Install a second version with `"default": false` and use it through its
   `env.sh`.
-- **Writable locations:** `/tmp`, `/var/tmp` and `/codex-home` are writable and
-  executable in Codex sessions, but discarded with the container; the workspace
-  and `/codex-home/.codex` persist. Recipes shared with other wrappers should
-  still point caches to `/tmp` with literal values, and keep notes such as
-  `GOTMPDIR` under the workspace, because `/tmp` is `noexec` in some of them.
+- **Writable locations:** `/tmp`, `/var/tmp` and `/codex-home` are writable but
+  `noexec`, and discarded with the container; the workspace and
+  `/codex-home/.codex` persist. Point caches to `/tmp` with literal values, and
+  keep executables such as `GOTMPDIR` under the workspace.
 - **Dependency downloads** (Maven, npm, pip, Cargo, Go modules) need network
   access that provider and offline modes do not grant. Provide dependencies in
   the workspace, or use an unrestricted session.
@@ -860,6 +894,22 @@ toolchains added after the session started.
 
 SELinux and AppArmor enforcement were not tested with the library mount. On
 hosts that enforce them, profile the tools you add.
+
+## Shared sandbox components and the agent profile
+
+`network/`, `setup/`, `launcher/` and the shared tests come unchanged from the
+reference repository `sandbox-container` and are shared with the Claude,
+Antigravity, OpenCode and Pi wrappers. They contain no Codex-specific names.
+`launcher/core.sh` is the whole launcher: `codex-container.sh` is the thin
+entry script every wrapper shares, and `agent/launcher.sh` holds the profile
+values the core needs plus Codex's three hooks. They document `CODEX_YOLO` and
+turn it into `--yolo`, and add the protected Codex arguments: in offline and
+provider sessions `--no-daemon -c sandbox_mode="danger-full-access"`, and in
+provider sessions also the `-c` overrides that disable optional traffic
+(`docs/launcher-contract.md` in `sandbox-container`). The shared launcher tests
+(`tests/test_launcher.py`, with the fake engine `tests/fake_podman.py`) run the
+core against fixture agent parts; `tests/test_wrapper.py` covers only Codex's
+part. Every other agent-specific value is declared in `agent/profile.json`.
 
 ## Included Tools
 
@@ -892,10 +942,11 @@ Codex cannot update itself inside a session because the image root is read-only.
 Run credential-free wrapper tests using standard-library Python:
 
 ```bash
+python3 -B -m unittest discover -s tests -p test_launcher.py -v
 python3 -B -m unittest discover -s tests -p test_wrapper.py -v
 python3 -B -m unittest discover -s tests -p test_image_pins.py -v
 python3 -B -m unittest discover -s tests -p test_reference_copy.py -v
-bash -n codex-container.sh tests/run-runtime.sh
+bash -n codex-container.sh launcher/core.sh agent/launcher.sh tests/run-runtime.sh
 git diff --check
 openspec validate --specs --strict
 ```
@@ -905,7 +956,7 @@ native volume storage, which also avoids a caller whose `/tmp` is `noexec` or
 whose workspace cannot bind Unix sockets:
 
 ```bash
-bash tests/run-runtime.sh --wrapper              # wrapper suite
+bash tests/run-runtime.sh --wrapper              # shared launcher and wrapper suites
 bash tests/run-runtime.sh --shared               # copied shared suites
 bash tests/run-runtime.sh --network-policy       # protected policy paths
 bash tests/run-runtime.sh --mux                  # multiplexed relay
@@ -928,7 +979,7 @@ separately against a built image and a usable same-host rootless service:
 
 ```bash
 # Build once, without real Codex state or authentication:
-podman build --tag localhost/codex-cli:latest --file Containerfile .
+CODEX_CONTAINER_NETWORK=unrestricted CODEX_CONTAINER_MAINTENANCE=1 bash ./codex-container.sh --container-build
 # Native Linux test storage, also visible at this path to the host service:
 CODEX_TEST_ROOT="$HOME/.local/share/codex-container-tests" \
 CODEX_RUNTIME_TESTS=1 python3 -B -m unittest discover -s tests -p test_runtime.py -v
@@ -948,7 +999,7 @@ or if the host has no Python. The checkout, test root, and build context must
 retain their host absolute paths when using a containerized caller.
 
 Checks cover real mount boundaries, identity, persistent state, all ephemeral
-locations, tmpfs capacities and execution, concurrent naming, signals and owned
+locations, tmpfs capacities and `noexec`, concurrent naming, signals and owned
 cleanup, exit 125, build-context exclusion, linked Git worktrees, child binds,
 a caller with a remapped Unix service socket, zero capabilities and
 no-new-privileges, effective cgroup v2 budgets and process-limit enforcement,

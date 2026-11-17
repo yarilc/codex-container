@@ -1170,3 +1170,117 @@ Runtime image: `localhost/codex-cli:setup-12c915b01d424f1391f37bdda7c344a7`; WSL
 | Operator `--container-setup` on the three hosts (`sandbox-ref-21`) | Passed (operator, 2026-11-16) |
 
 Only shared test files changed: installations need no new setup for this tag.
+
+## Adoption of `sandbox-ref-23` and `sandbox-ref-24`: 2026-11-17
+
+Change `adopt-sandbox-ref-23`. Copied with `tools/propagate.py` from
+`sandbox-container` tag `sandbox-ref-23` (commit `7d14706`): `launcher/core.sh`,
+`tests/test_launcher.py`, `tests/fake_podman.py`,
+`tests/fixtures/agent/launcher.sh`, `tests/fixtures/shell-agent/launcher.sh`,
+`network/README.md`, `network/agent_profile.py`, `network/control.py`,
+`network/qualification_records.py`, `network/qualify.py`, `setup/common.py`,
+`setup/launch.py`, `setup/setup.py`, `tests/fixtures/agent/profile.json`,
+`tests/sandbox_profile.py`, `tests/test_agent_profile.py`,
+`tests/test_alignment.py`, `tests/test_network_policy.py`,
+`tests/test_qualification.py`, `tests/test_setup.py`. Then from tag
+`sandbox-ref-24` (commit `dd5d82e`): `launcher/core.sh`, `tests/test_launcher.py`.
+The `tests/test_reference_copy.py` manifest moved to `sandbox-ref-24`, with
+`launcher/` as a closed shared directory; the parity table was fixed by hand.
+
+- **Launcher:** `codex-container.sh` is the reference's thin entry script;
+  `agent/launcher.sh` holds Codex's profile values, `AGENT_CREDENTIALS`
+  (`openai-api` and `openai-api-docs` with `OPENAI_API_KEY`, `openai-account`
+  without) and three hooks: `agent_command_args` (protected
+  `--no-daemon -c sandbox_mode="danger-full-access"` in restricted sessions and
+  the ten provider-only `-c` overrides), `agent_approval_bypass` (`--yolo`) and
+  `agent_help` (documents `CODEX_YOLO` and `OPENAI_API_KEY`).
+- **Reference defect, fixed as `sandbox-ref-24`:** an inaccessible state
+  directory stopped with a raw `cd: ...: Permission denied` (change
+  `fix-inaccessible-state-diagnostic` in `sandbox-container`).
+- **Temporary storage (design decision 3):** Codex declares no executable
+  temporary storage. With the rebuilt image, shell sessions with shared,
+  isolated and read-only state ran `codex --version`, `codex exec --help`,
+  `codex login status` (not logged in) and a failing `codex exec`; Codex wrote
+  no executable under `/tmp`, `/var/tmp`, `/run` or the home outside `.codex`
+  (only Node's compile cache in `/tmp`, data files, and the image's own
+  `/codex-home/.npm` copied into the tmpfs). With read-only state Codex warns
+  that it cannot create its PATH aliases in `.codex` and proceeds; that is a
+  read-only state limit, not `noexec`. The real network suite's actual Codex
+  shell tool (synthetic Responses API) passed with `noexec` temporary storage.
+- **`/run` (user, 2026-11-17: visible change):** the old launcher mounted `/run`
+  with mode 1777; the core, like the reference and Claude (contract L7), does
+  not, so the session user cannot write there. Two runtime cases that wrote to
+  `/run` now assert that it is not writable.
+
+Old tests gate (design decision 4): the `sandbox-ref-21` `tests/test_wrapper.py`
+(85 cases) ran against the new entry script and core, with only its harness
+adapted (the fake engine answers the `build-inputs-hash` label and the core's
+one-line socket query; synthetic installations copy the core, the agent part
+and the build inputs; the controlled `readlink` resolver answers only socket
+paths; the isolated-home privacy case expects the core's wording). Against
+`sandbox-ref-23`: 54 passed, 31 failed, with one lost behavior. Against
+`sandbox-ref-24`: 57 passed, 28 failed, the same failing subtests minus
+`test_inaccessible_state`; no lost behavior remains.
+
+| Old case | Outcome | Maps to |
+| --- | --- | --- |
+| `test_api_key_follows_the_policy_authentication_method` | visible change | U10 (source inspection of the old launcher; rewritten in tests/test_wrapper.py) |
+| `test_unreapable_client_reports_without_waiting` | visible change | source inspection of the old helper; the core reports "local client ... did not terminate within the deadline" (U9) |
+| `test_verification_normal_terminators_and_socket_spaces` (build=True only) | visible change | U3/U16 build-only: no session after `--container-build` |
+| `test_all_names_decimal_bounds_and_listing_error` | visible change | wording ("cannot list Podman containers") |
+| `test_application_status_and_cleanup_failure` | visible change | wording; status preserved (U9 cleanup report "cleanup rm failed or timed out") |
+| `test_budget_mismatch_and_inspection_failure_stop_before_start` | visible change | equivalent removal arguments (`rm --force --time 0 --ignore <id>`); start still refused |
+| `test_creation_and_collision_query_failures` (exists=125) | visible change | phase 6: collisions confirmed by ownership label, not `container exists`; create diagnostics kept |
+| `test_device_and_secret_mounts_in_every_unrestricted_mode` | visible change | U7 noexec tmpfs |
+| `test_existing_state_relative_symlink_and_spaces` (relative path) | visible change | M14: CODEX_HOME must be absolute |
+| `test_explicit_build_and_image_override` | visible change | U8/U12 build arguments (`--pull=never --format docker --label build-inputs-hash`) |
+| `test_help_documents_hardening` | visible change | help text from the core (line break inside "drops all capabilities") |
+| `test_help_documents_modes_migration_and_provider_limits` | visible change | U1: no migration text |
+| `test_setup_entry_point_is_dedicated_and_help_takes_precedence` | visible change | U1 help text |
+| `test_image_and_build_status_matrix` | visible change | U3 build-only inspects the image; a failed image inspection exits 1 with a diagnostic instead of the engine status (user, 2026-11-17: visible change) |
+| `test_maintenance_gates_every_build` | visible change | same as above |
+| `test_inaccessible_state` (mode=0) | lost behavior, fixed in `sandbox-ref-24` | against `sandbox-ref-23` the core stopped with a raw `cd: ...: Permission denied`; fixed in the reference by `fix-inaccessible-state-diagnostic` (`sandbox-ref-24`, shared case `test_inaccessible_state_and_ignored_permissions`); passes on `sandbox-ref-24` |
+| `test_interrupted_creation_invalid_identity_and_control_failures` | visible change | wording of the core's cleanup reports (validated CID record, U9) |
+| `test_interrupted_creation_is_recovered_by_label` | visible change | wording of the core's cleanup reports |
+| `test_invalid_state_before_image_operations` | visible change | U16 build-only does not create or check state |
+| `test_missing_mode_stops_before_engine_state_and_other_checks` | visible change | U1 provider default (to verify at adoption: verified) |
+| `test_mode_and_delegation_rejections_precede_engine` | visible change | phase 1-2 union: setup guidance before mode-specific settings |
+| `test_non_enforcing_modes_controlled_fixture` | visible change | wording ("use native Linux storage if permissions are not enforced") |
+| `test_offline_order_arguments_and_status` | visible change | U8 label inspection adds one image query; qualification check after the name listing, before create |
+| `test_permanently_stalled_creation_signal_matrix` | visible change | U9 immediate shutdown |
+| `test_permissions_independent_and_exact_opt_in` | visible change | phase 5 union: `--unsetenv CONTAINER_CONNECTION` always; U14 shell receives its arguments |
+| `test_provider_order_protected_overrides_and_api_key` | visible change | U7 noexec tmpfs; protected overrides and key otherwise as before |
+| `test_socket_fallbacks_and_symlink` (default path) | visible change | fixture limit: the core checks the default socket before resolving it; the message names /run/user/<uid>/podman/podman.sock, the expected fallback |
+| `test_stubborn_application_and_stalled_cleanup_are_bounded` | visible change | U9 rewrite; wording |
+| `test_tmpfs_capacities_and_options` | visible change | U7/L7 noexec, /run noexec |
+
+The other "to verify at adoption" cases passed against the core. The hook
+cases (`test_yolo_case_insensitive_and_delegation_independent`,
+`test_permissions_independent_and_exact_opt_in`,
+`test_unrestricted_codex_keeps_its_own_sandbox`) and the Codex-only protected
+arguments and API key are rewritten in the reduced `tests/test_wrapper.py`.
+
+Environment: WSL2 6.6.87.2, Podman server 4.9.3 (client 4.3.1); image rebuilt
+through the build-only path: `localhost/codex-cli:latest` `f96d5e50eef8`,
+`build-inputs-hash`
+`b57f58660850a52dce9c832e0dcaa2cc2d7b92b4a3f768a861a499a9eeb0d3af`.
+
+| Check | Result |
+| --- | --- |
+| `--container-build` alone (real engine, maintenance) | Passed: built, labeled, no session container |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 450 tests, 72 skipped |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment` (host Python, siblings present) | Passed: 22 tests |
+| Mutated `agent/launcher.sh` (no bypass flag, no `--no-daemon`, one provider override and the `openai-api-docs` credential removed), `tests.test_wrapper` | Failed as expected: 22 failures; restored |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 118 tests (`test_launcher.py`, `test_wrapper.py`) |
+| `bash tests/run-runtime.sh --shared` | Passed: 287 tests, 29 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 67 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 29 tests |
+| `bash tests/run-runtime.sh --network` | Passed: 24 tests, 1 skipped |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | First run failed: 2 tests wrote to `/run`; after the `/run` update passed: 17 tests |
+| `git diff --check`, `bash -n` on the entry script, core and agent part | Passed |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+
+The installed and qualified code changes (entry script, core, agent part):
+installations rerun `--container-setup`.
