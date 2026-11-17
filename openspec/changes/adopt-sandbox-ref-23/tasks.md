@@ -11,7 +11,7 @@
 
 ## 2. Launcher on the shared core
 
-- [ ] 2.1 Save the current `tests/test_wrapper.py` and `codex-container.sh` outside the repository as the old-test baseline. Write `agent/launcher.sh` (design decision 2) and replace `codex-container.sh` with the reference entry script. Verify that:
+- [x] 2.1 Save the current `tests/test_wrapper.py` and `codex-container.sh` outside the repository as the old-test baseline. Write `agent/launcher.sh` (design decision 2) and replace `codex-container.sh` with the reference entry script. Verify that:
   - `python3 -m unittest tests.test_alignment tests.test_launcher` passes in the disposable test container;
   - `bash codex-container.sh --container-help` prints the provider disclosure with the `openai-account` and `openai-api` hosts and the `CODEX_YOLO` entry;
   - `diff <(sed s/sandbox-container/codex-container/g ../sandbox-container/sandbox-container.sh) codex-container.sh` is empty.
