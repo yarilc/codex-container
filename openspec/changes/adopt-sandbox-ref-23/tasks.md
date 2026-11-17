@@ -2,10 +2,10 @@
 
 ## 1. Adopt `sandbox-ref-23`
 
-- [ ] 1.1 Commit this change directory on `main` and create `prepare-adopt-sandbox-ref-23`. From `sandbox-container`, run `python3 -I tools/propagate.py ../codex-container sandbox-ref-21 sandbox-ref-23` (dry run), then `--apply`. Add `launcher` to `CLOSED_DIRECTORIES` in `tests/test_reference_copy.py`. Verify that:
+- [x] 1.1 Commit this change directory on `main` and create `prepare-adopt-sandbox-ref-23`. From `sandbox-container`, run `python3 -I tools/propagate.py ../codex-container sandbox-ref-21 sandbox-ref-23` (dry run), then `--apply`. Add `launcher` to `CLOSED_DIRECTORIES` in `tests/test_reference_copy.py`. Verify that:
   - the plan lists exactly the files in design "Context";
   - the tool switched to `adopt-sandbox-ref-23`.
-- [ ] 1.2 Fix the parity table in `docs/network-contract.md` by hand (design decision 7). Verify that:
+- [x] 1.2 Fix the parity table in `docs/network-contract.md` by hand (design decision 7). Verify that:
   - the reference and Claude rows equal those in `sandbox-container` and `claude-container`;
   - the Antigravity, OpenCode and Pi rows equal their own repositories'.
 
