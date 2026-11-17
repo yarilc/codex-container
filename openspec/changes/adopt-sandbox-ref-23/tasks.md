@@ -15,7 +15,7 @@
   - `python3 -m unittest tests.test_alignment tests.test_launcher` passes in the disposable test container;
   - `bash codex-container.sh --container-help` prints the provider disclosure with the `openai-account` and `openai-api` hosts and the `CODEX_YOLO` entry;
   - `diff <(sed s/sandbox-container/codex-container/g ../sandbox-container/sandbox-container.sh) codex-container.sh` is empty.
-- [ ] 2.2 Run the saved `tests/test_wrapper.py` against the new entry script and core in the disposable test container. Adapt only its harness (design decision 4). Classify every failing case as (a) visible change, (b) lost behavior or (c) Codex-only behavior, and resolve the 72 "to verify at adoption" cases by name. Record the table in a scratch note for task 4.2. Verify that every failing case has exactly one outcome.
+- [x] 2.2 Run the saved `tests/test_wrapper.py` against the new entry script and core in the disposable test container. Adapt only its harness (design decision 4). Classify every failing case as (a) visible change, (b) lost behavior or (c) Codex-only behavior, and resolve the 72 "to verify at adoption" cases by name. Record the table in a scratch note for task 4.2. Verify that every failing case has exactly one outcome.
 - [ ] 2.3 If task 2.2 found any (b), pause this change. Fix each behavior with a shared case in `sandbox-container` through its own reference change and tag, then rerun tasks 1.1 to 2.2 against the new tag. Update this change's artifacts to name that tag. Verify that a rerun of task 2.2 finds no (b). If task 2.2 found none, mark this task done with the note "no lost behavior".
 
 ## 3. Codex tests and documentation
