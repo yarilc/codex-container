@@ -43,7 +43,7 @@
 
 ## 4. Integration
 
-- [ ] 4.1 Rebuild the Codex test image with `--container-build`. Run the temporary-storage check of design decision 3 in shell sessions with shared, isolated and read-only state. If Codex needs executable temporary storage, pause and ask the user before changing the profile, the specs or the runtime test. Then run:
+- [x] 4.1 Rebuild the Codex test image with `--container-build`. Run the temporary-storage check of design decision 3 in shell sessions with shared, isolated and read-only state. If Codex needs executable temporary storage, pause and ask the user before changing the profile, the specs or the runtime test. Then run:
   - the unit discovery in the disposable test container;
   - `bash tests/run-runtime.sh` with `--wrapper`, `--shared`, `--setup`, `--setup-runtime`, `--qualification`, `--network` and `--guard`, and the default mode;
   - `git diff --check`.

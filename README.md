@@ -676,15 +676,16 @@ in `unrestricted`. The measurements are in
 
 Both Codex and shell sessions use a read-only image root filesystem. The
 workspace and persistent Codex state remain writable host binds. `/tmp`,
-`/var/tmp`, `/run`, and `/codex-home` (in shared state) use writable temporary
+`/var/tmp` and `/codex-home` (in shared state) use writable temporary
 filesystems; files there are discarded when the container is removed, except
-for the nested persistent mount at `/codex-home/.codex`.
+for the nested persistent mount at `/codex-home/.codex`. `/run` is a temporary
+filesystem the session user cannot write.
 
 `/tmp`, `/var/tmp` and the shared-state home each have a 512 MiB maximum and
 `/run` a 32 MiB maximum, the same in every wrapper. All four are `nosuid`,
 `nodev` and `noexec`: nothing written there can be executed, so build and test
 artifacts that must run belong in the workspace. `/tmp`, `/var/tmp` and the home
-keep mode 1777. These are per-mount capacities, not reserved memory or a total
+keep mode 1777; `/run` does not. These are per-mount capacities, not reserved memory or a total
 container memory limit. Writes can fail when a bounded mount fills; workspace
 and persistent state remain separate host storage. In delegated sessions, nested
 Podman gets its own private tmpfs storage.
