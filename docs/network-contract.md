@@ -14,7 +14,7 @@ isolation, delegation and image specifications in `openspec/specs/`.
 ## Reference and intentional differences
 
 The shared components are copied unchanged from `sandbox-container` at tag
-`sandbox-ref-23` (commit `7d14706296b7e6140b3ebd62eca05f1675665950`):
+`sandbox-ref-24` (commit `dd5d82eaadc4b25724e2c702ff4039d4c21836aa`):
 
 - `network/` (except the build output `network/bin/`);
 - `setup/`;
@@ -110,7 +110,7 @@ The same row appears in `sandbox-container/docs/network-contract.md`.
 | --- | --- | --- | --- | --- |
 | Sandbox (reference) | Reference (`sandbox-ref-23`, shared launcher core) | Guard, qualification and guided setup integrated; no provider mode (no authentication method); provider mechanics covered by the fixture profile and the fixture agent part | WSL ABI 3: all runner modes passed (2026-11-17) | Not applicable |
 | Claude | Adopted `sandbox-ref-23`: shared launcher core | Shared launcher core, mandatory bootstrap, multiplexed proxy and guided setup integrated | WSL ABI 3: all runner modes passed (2026-11-17, shared launcher core) | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
-| Codex | Ported from `sandbox-ref-23`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Operator session with tool use passed (2026-11-11, `openai-account`); refresh and API-key checks pending; synthetic Responses API streaming and tool call passed |
+| Codex | Ported from `sandbox-ref-24`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Operator session with tool use passed (2026-11-11, `openai-account`); refresh and API-key checks pending; synthetic Responses API streaming and tool call passed |
 | Antigravity | Ported from `sandbox-ref-21`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated; keyring removed | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `google-account`, policy `antigravity-2026-11-11-v2`); refresh and Gemini API-key checks pending; synthetic Gemini streaming and tool call passed |
 | OpenCode | Ported from `sandbox-ref-21`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `anthropic-api`); the other three profiles pending; synthetic Chat Completions streaming and tool call passed |
 | Pi | Ported from `sandbox-ref-21`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `anthropic-api`); the other three profiles pending; synthetic Chat Completions streaming and tool call passed |

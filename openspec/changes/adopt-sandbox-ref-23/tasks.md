@@ -16,7 +16,8 @@
   - `bash codex-container.sh --container-help` prints the provider disclosure with the `openai-account` and `openai-api` hosts and the `CODEX_YOLO` entry;
   - `diff <(sed s/sandbox-container/codex-container/g ../sandbox-container/sandbox-container.sh) codex-container.sh` is empty.
 - [x] 2.2 Run the saved `tests/test_wrapper.py` against the new entry script and core in the disposable test container. Adapt only its harness (design decision 4). Classify every failing case as (a) visible change, (b) lost behavior or (c) Codex-only behavior, and resolve the 72 "to verify at adoption" cases by name. Record the table in a scratch note for task 4.2. Verify that every failing case has exactly one outcome.
-- [ ] 2.3 If task 2.2 found any (b), pause this change. Fix each behavior with a shared case in `sandbox-container` through its own reference change and tag, then rerun tasks 1.1 to 2.2 against the new tag. Update this change's artifacts to name that tag. Verify that a rerun of task 2.2 finds no (b). If task 2.2 found none, mark this task done with the note "no lost behavior".
+- [x] 2.3 If task 2.2 found any (b), pause this change. Fix each behavior with a shared case in `sandbox-container` through its own reference change and tag, then rerun tasks 1.1 to 2.2 against the new tag. Update this change's artifacts to name that tag. Verify that a rerun of task 2.2 finds no (b). If task 2.2 found none, mark this task done with the note "no lost behavior".
+  - Done: one (b), `test_inaccessible_state`, fixed by `fix-inaccessible-state-diagnostic` in `sandbox-ref-24`. Propagated `sandbox-ref-23` to `sandbox-ref-24`; the rerun of task 2.2 finds 28 failing cases, all previously classified (a), and no (b).
 
 ## 3. Codex tests and documentation
 
@@ -48,11 +49,11 @@
   - `git diff --check`.
 
   Verify that all pass.
-- [ ] 4.2 Add the `sandbox-ref-23` adoption section to `docs/validation.md`, starting from the tool's template. It holds every result, the temporary-storage evidence and the old-test classification table from task 2.2. Commit with the tool's message and merge into `main`. Verify that `tests/test_reference_copy.py` passes on `main` with host Python next to the `sandbox-container` checkout, with the sibling check not skipped.
+- [ ] 4.2 Add the `sandbox-ref-24` adoption section to `docs/validation.md`, starting from the tool's template. It holds every result, the temporary-storage evidence and the old-test classification table from task 2.2. Commit with the tool's message and merge into `main`. Verify that `tests/test_reference_copy.py` passes on `main` with host Python next to the `sandbox-container` checkout, with the sibling check not skipped.
 
 ## Workflow follow-up
 
 - The operator pushes `main` and runs `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host, then checks a Codex session in provider mode.
 - Archive this change with spec sync. This creates `openspec/specs/shared-launcher/spec.md` in this repository.
-- Refresh the Codex row of the parity table in `sandbox-container` and `claude-container` to `sandbox-ref-23`.
-- Antigravity and Pi adopt `sandbox-ref-23` in their own changes, and OpenCode after them.
+- Refresh the Codex row of the parity table in `sandbox-container` and `claude-container` to `sandbox-ref-24`.
+- Antigravity and Pi adopt `sandbox-ref-24` in their own changes, and OpenCode after them.

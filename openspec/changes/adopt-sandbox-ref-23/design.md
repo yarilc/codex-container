@@ -54,6 +54,8 @@ The `tools/propagate.py` dry run from `sandbox-ref-21` straight to `sandbox-ref-
 - **Rewrite:** one reference each in `README.md`, `AGENTS.md` and `docs/setup.md`, and eight in `docs/network-contract.md`.
 - **Move:** the manifest to `sandbox-ref-23` (`7d14706`).
 
+Task 2.2 found one lost behavior: an inaccessible state directory stopped with a raw `cd: ...: Permission denied`. `sandbox-container` fixed it in `fix-inaccessible-state-diagnostic` and tagged `sandbox-ref-24` (`dd5d82e`). The second propagation, `sandbox-ref-23` to `sandbox-ref-24`, updates `launcher/core.sh` and `tests/test_launcher.py`, the five current-state references and the manifest.
+
 The Claude adoption (`adopt-sandbox-ref-22`, archived 2026-11-17) found four things every adoption needs:
 - `tests/test_reference_copy.py` must list `launcher` in `CLOSED_DIRECTORIES`;
 - the old `tests/test_wrapper.py` runs against the core only with an adapted harness:
@@ -75,7 +77,7 @@ The Claude adoption (`adopt-sandbox-ref-22`, archived 2026-11-17) found four thi
 
 ## Decisions
 
-1. **Adopt with the tool, straight from `sandbox-ref-21` to `sandbox-ref-23`.** The dry run must list exactly the plan in "Context". `--apply` switches to the branch `adopt-sandbox-ref-23`. Then add `launcher` to `CLOSED_DIRECTORIES` in `tests/test_reference_copy.py`. That file is wrapper-owned, and the Claude adoption made the same fix. Alternative rejected: going through `sandbox-ref-22` first. Its shared tests carry Claude identifiers and fail the alignment test.
+1. **Adopt with the tool, straight from `sandbox-ref-21` to `sandbox-ref-23`.** The dry run must list exactly the plan in "Context". `--apply` switches to the branch `adopt-sandbox-ref-23`. Then add `launcher` to `CLOSED_DIRECTORIES` in `tests/test_reference_copy.py`. That file is wrapper-owned, and the Claude adoption made the same fix. After a lost behavior is fixed in the reference, the tool runs again from the adopted tag to the new one; its changes are carried back onto `adopt-sandbox-ref-23`, and the parity rows it rewrites are restored by hand. Alternative rejected: going through `sandbox-ref-22` first. Its shared tests carry Claude identifiers and fail the alignment test.
 
 2. **Entry script and agent part.**
    - `codex-container.sh` is the reference `sandbox-container.sh`, with only the wrapper name changed in its comment.
@@ -155,7 +157,7 @@ The Claude adoption (`adopt-sandbox-ref-22`, archived 2026-11-17) found four thi
    - **`docs/setup.md`.** It follows the provider default.
    - **Parity table in `docs/network-contract.md`.** It is fixed by hand after `--apply`:
      - the reference and Claude rows are copied from their repositories;
-     - the Codex row says it adopted `sandbox-ref-23`, with its runtime results;
+     - the Codex row says it adopted `sandbox-ref-24`, with its runtime results;
      - the Antigravity, OpenCode and Pi rows are copied from their repositories.
 
 8. **Validation scope.** The launcher, installation manifest and qualification identity all change, so validation covers the full set:

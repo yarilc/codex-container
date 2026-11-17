@@ -29,7 +29,7 @@
 `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`,
 `test_qualification.py`, `test_guard.py`, `test_session.py`,
 `test_network_feasibility.py` and their fixtures) are copied unchanged from
-`sandbox-container` at tag `sandbox-ref-23`. Never edit them here and never add an
+`sandbox-container` at tag `sandbox-ref-24`. Never edit them here and never add an
 agent identifier (`codex`, `openai`) to them: fix a defect in `sandbox-container`
 first, then copy the files again and update the manifest in
 `tests/test_reference_copy.py`. Codex values come only from `agent/`, the
