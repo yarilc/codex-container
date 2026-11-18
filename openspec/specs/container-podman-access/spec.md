@@ -30,7 +30,7 @@ With the integration disabled, the runtime SHALL retain its installed Podman com
 
 ### Requirement: Enabled access uses the host rootless service
 
-With Podman access enabled, the wrapper SHALL provide the Podman command, validate the selected Unix socket, mount its reported host-side path at `/run/podman/podman.sock`, and set `CONTAINER_HOST=unix:///run/podman/podman.sock`. Missing sockets SHALL produce an actionable error before starting a session. The wrapper SHALL verify that the service at that exact socket reports rootless operation before exposing it. A host-side path reported as a `unix://` URL SHALL be reduced to its path before validation. Delegated sessions SHALL get private tmpfs mounts at `/var/lib/containers` and `/run/containers`. Access SHALL NOT require privileged mode or a nested daemon.
+With Podman access enabled, the wrapper SHALL provide the Podman command, validate the selected Unix socket, mount its reported host-side path at `/run/podman/podman.sock`, and set `CONTAINER_HOST=unix:///run/podman/podman.sock`. Missing sockets SHALL produce an actionable error before starting a session. The wrapper SHALL verify that the service at that exact socket reports rootless operation before exposing it. A host-side path reported as a `unix://` URL SHALL be reduced to its path before validation. Delegated sessions SHALL get private tmpfs mounts at `/var/lib/containers` and `/run/containers`. Access SHALL NOT require privileged mode or a nested daemon. The host socket path, after removing a `unix://` prefix, SHALL NOT consist only of slash characters. When that path exists in the wrapper's own filesystem namespace, it SHALL be a Unix socket; a path the wrapper cannot see is accepted as the remapped socket of a containerized wrapper, whose answer stays trusted. Guided setup SHALL apply the same checks.
 
 #### Scenario: Enabled service access
 - **WHEN** the opt-in is enabled and the host socket is usable and reports a rootless engine
@@ -62,6 +62,14 @@ With Podman access enabled, the wrapper SHALL provide the Podman command, valida
 #### Scenario: Invalid host-side socket path
 - **WHEN** the selected service reports an empty or non-absolute host-side socket path, also after removing a `unix://` prefix
 - **THEN** the wrapper fails with an actionable error before image inspection, building, or startup
+
+#### Scenario: Host socket path is the root directory
+- **WHEN** an enabled delegation endpoint reports `/`, `//` or `unix:///` as its host socket path
+- **THEN** startup fails before image operations with a socket-specific diagnostic, and the host root is never mounted
+
+#### Scenario: Host socket path is not a socket
+- **WHEN** an enabled delegation endpoint reports a host socket path that exists in the wrapper's namespace as a directory, a regular file, a dangling link or another non-socket
+- **THEN** startup fails before image operations naming the reported path, and nothing is mounted from it
 
 ### Requirement: Keep one image for both access modes
 

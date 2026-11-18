@@ -38,7 +38,7 @@ The wrapper SHALL accept `CODEX_CONTAINER_NETWORK=offline|provider|unrestricted`
 
 #### Scenario: Qualification is not an ordinary session
 - **WHEN** `--container-qualify` runs with no effective mode
-- **THEN** it qualifies offline mode by default with its protected fixtures
+- **THEN** it qualifies the default mode, `provider`, with its protected fixtures, as the launcher and every Python helper resolve it
 - **AND** neither the operation nor its internal probe admits an arbitrary application command or bypasses enforcement
 
 ### Requirement: Restricted sessions have no direct external path
