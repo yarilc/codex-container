@@ -75,7 +75,7 @@ within the remaining shutdown budget.
 | Profile | Destinations | Status |
 | --- | --- | --- |
 | `openai-api` | `api.openai.com:443` | Synthetic coverage; real API key unverified |
-| `openai-account` | `auth.openai.com:443`, `chatgpt.com:443`, `developers.openai.com:443` | Sign-in hosts measured statically from Codex 0.167.0 and the documentation (sign-in, request and refresh unverified); documentation MCP host measured with a logging proxy on Codex 0.167.0 (2026-11-10) |
+| `openai-account` | `auth.openai.com:443`, `chatgpt.com:443`, `developers.openai.com:443` | Static inventory and documentation MCP revalidated with Codex 0.169.0 (2026-11-18). Account sign-in, request and refresh await operator verification. |
 | `openai-api-docs` | `api.openai.com:443`, `developers.openai.com:443` | Extension of `openai-api`; same documentation MCP measurement |
 
 `OPENAI_API_KEY` is forwarded only to provider sessions whose profile is

@@ -125,7 +125,7 @@ class SetupRuntime(unittest.TestCase):
                                 env={'PATH': self.env['PATH'], 'HOME': self.env['HOME']},
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('codex-cli 0.167.0', result.stdout)
+        self.assertIn('codex-cli 0.169.0', result.stdout)
         self.assertIn('enforced revision=abi3-seccomp-mux-v1', result.stderr)
         self.assertRegex(result.stderr, r'(INFO\[\d+\] Should restart: false|level=info msg="Should restart: false")')
         self.assertNotRegex(result.stderr, r'ERRO\[\d+\] Should restart: false')
@@ -204,4 +204,4 @@ class SetupRuntime(unittest.TestCase):
                                 env={'PATH': self.env['PATH'], 'HOME': self.env['HOME']},
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('codex-cli 0.167.0', result.stdout)
+        self.assertIn('codex-cli 0.169.0', result.stdout)

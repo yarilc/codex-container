@@ -133,16 +133,16 @@ class ImagePinTests(unittest.TestCase):
             'latest package': self.recipe.replace('"@fission-ai/openspec@${OPENSPEC_VERSION}"',
                                                   '@fission-ai/openspec@latest'),
             'unversioned package': self.recipe.replace('"@openai/codex@${CODEX_VERSION}"', '@openai/codex'),
-            'version range': self.recipe.replace('ARG OPENSPEC_VERSION=1.16.0', 'ARG OPENSPEC_VERSION=^1.16.0'),
+            'version range': self.recipe.replace('ARG OPENSPEC_VERSION=2.0.0', 'ARG OPENSPEC_VERSION=^2.0.0'),
             'missing package': self.recipe.replace('"@openai/codex@${CODEX_VERSION}" \\\n', ''),
-            'diverging cli': self.recipe.replace('ARG CODEX_VERSION=0.167.0', 'ARG CODEX_VERSION=0.167.1'),
+            'diverging cli': self.recipe.replace('ARG CODEX_VERSION=0.169.0', 'ARG CODEX_VERSION=0.169.1'),
         }
         for name, recipe in cases.items():
             with self.subTest(name=name):
                 self.assertNotEqual(recipe, self.recipe)
                 self.assertTrue(violations(recipe, self.tested_cli))
         message = violations(cases['diverging cli'], self.tested_cli)
-        self.assertTrue(any('0.167.1' in item and '0.167.0' in item for item in message), message)
+        self.assertTrue(any('0.169.1' in item and '0.169.0' in item for item in message), message)
 
     def test_build_context_admits_only_the_relay_inputs(self):
         self.assertIn('COPY network/relay.py network/mux.py /opt/sandbox-egress/', self.recipe)

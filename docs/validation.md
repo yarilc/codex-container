@@ -1316,3 +1316,122 @@ Environment: WSL2 6.6.87.2, Podman server 4.9.3; image `localhost/codex-cli:late
 | Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator, 2026-11-18) |
 
 The installed launcher core and setup change: installations rerun `--container-setup`.
+
+## Codex 0.169.0 and OpenSpec 2.0.0 image pins (2026-11-18)
+
+The change `pin-codex-0-169-0` uses the newest stable npm releases at least
+72 hours old at the 2026-11-18 freeze. Codex 0.169.0 was published on November 13
+and OpenSpec 2.0.0 on November 11. Codex 0.169.1 and 0.170.0 were still within
+the 72-hour window. The base remains
+`node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da`.
+
+| Image | Image ID | Reported Codex | Reported OpenSpec |
+| --- | --- | --- | --- |
+| Baseline | `23c66b6f1bf838d378db421693480058ab6b987dddcb78d0a444c0ac0ccfb732` | 0.167.0 | 1.16.0 |
+| Updated | `7c185bec05cea191b92dca0a374c49c69b3d2abdd70a15b28294f27074dca11b` | 0.169.0 | 2.0.0 |
+
+The maintenance build fetched Debian packages over HTTPS. Its build-inputs
+hash is `cb457cf0ca22ae4419f38e5ab91ec4229d0deede6e390d4d886f85d3267d25eb`.
+The updated image reports Node.js 22.23.4 and Python 3.11.2. Validation used
+WSL2 6.6.87.2 x86_64, Podman client 4.3.1, rootless server 4.9.3 and Netavark.
+
+### Endpoint inventory and native controls
+
+The offline scan compared literal HTTPS URLs in the installed Linux x64
+`codex`, `codex-code-mode-host` and `codex-voice-host` binaries. It also found
+the same API-key names, CA environment variables, OAuth exchange and revocation
+paths, device-code paths, and Responses API and ChatGPT route fragments.
+
+| Host | Comparison with 0.167.0 |
+| --- | --- |
+| `api.openai.com` | Retained the Responses API route. The synthetic provider test exercised it with a dummy key. |
+| `auth.openai.com` | Retained the OAuth and device-code routes. Both versions attempted only this host for `login --device-auth` through a reject-all loopback proxy with external networking disabled. |
+| `chatgpt.com` | Retained `/backend-api/codex` for account requests. |
+| `developers.openai.com` | Retained documentation URLs. The user-configured MCP server used this host through the production proxy. |
+| `auth.api.openai.org`, `api.openai.org` | Additional staging references for identity and the decisions service in the tagged sources. |
+| `codex-cloud-backend.chatgpt.com`, `codex-portals.api.openai.com` | Additional references for Cloud and the TCP tunnel feature in the tagged sources. |
+| Other references | Both binaries reference `ab.chatgpt.com` and `persistent.oaistatic.com`. New literals include `registry.npmjs.org` and `rootnet.in`. |
+
+The required hosts for `openai-api`, `openai-account` and `openai-api-docs`
+match the previous inventory. The policy revision is `openai-2026-11-11-v1`.
+The staging and feature classifications come from the
+[tagged upstream sources](https://github.com/openai/codex/tree/rust-v0.169.0).
+
+Codex accepted `--no-daemon`, `-c sandbox_mode="danger-full-access"`, and
+`--yolo`. `exec --strict-config` rejected an unknown key. In both state modes
+under the production guard, the Bubblewrap path failed to create the Netlink
+route socket (exit 1). The legacy Landlock path required Bubblewrap (exit 101).
+Both paths stopped before starting their commands.
+
+### Documentation MCP and workspace trust
+
+In a locally qualified session with the shipped `openai-api-docs` profile,
+`codex mcp add openaiDeveloperDocs --url https://developers.openai.com/mcp`
+wrote user-level configuration under a disposable `CODEX_HOME`. The real
+server reported `enabled` and auth status `Unsupported` in `codex mcp list`,
+matching the 0.167.0 measurement on the same profile.
+
+The controlled provider fixture used the same destination set with local TLS
+endpoints for the documentation MCP and Responses API. The workspace was
+explicitly untrusted and had a project-level MCP entry for `mcp.example.com`.
+The user-level server appeared in `mcp list`. `codex exec --strict-config`
+initialized it and requested `tools/list` without `--trust`, then completed a
+synthetic shell-tool exchange under the guard. The project entry generated no
+CONNECT attempt. A separate explicit probe of `mcp.example.com:443` was denied.
+
+| Invocation | Logged CONNECT attempts |
+| --- | --- |
+| `codex mcp list` | `developers.openai.com:443` (2) |
+| `codex exec` | `api.openai.com:443` (9), `developers.openai.com:443` (1) |
+
+The runs used a dummy API key and disposable configuration. The synthetic
+Responses exchange stayed within the fixture.
+
+### Offline OpenSpec round trip
+
+OpenSpec 1.16.0 populated `.config/openspec/config.json` in disposable isolated
+state. OpenSpec 2.0.0 read the same profile in the qualified offline shell with
+guard `abi3-seccomp-mux-v1`. The temporary project passed `init --tools none`,
+`new change`, `validate --all --strict --json`, and `list --json`. The
+temporary change used `skip_specs: true`. The configuration files and their
+checksums matched before and after.
+
+### Acceptance checks
+
+Both recipes passed the seven pin tests. Credential-free unit discovery ran
+451 cases with the same 72 skips and matching case-by-case results on both
+images. The reference-copy test verified byte identity with `sandbox-ref-25`
+using the sibling checkout.
+
+| Check | Result |
+| --- | --- |
+| `bash tests/run-runtime.sh --wrapper` | Passed all 119 tests. |
+| `bash tests/run-runtime.sh --shared` | Ran 288 cases with 29 skips. The separate unit discovery covered the reference checkout comparison. |
+| `bash tests/run-runtime.sh --setup` | Passed all 67 tests. |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed both tests. |
+| `bash tests/run-runtime.sh` | Passed all 17 default runtime tests. |
+| `bash tests/run-runtime.sh --qualification` | Passed all 29 tests. |
+| `SANDBOX_EXTERNAL_TESTS=1 bash tests/run-runtime.sh --network` | 23 passed in the full run. The remaining live MCP test passed on an isolated rerun. |
+| `bash tests/run-runtime.sh --guard` | Ran 20 cases with the opt-in idle check skipped. All other cases passed. |
+| `bash tests/run-runtime.sh --guard-idle` | Passed. The guarded provider channel resumed after 305 seconds of inactivity. |
+| `bash tests/run-runtime.sh --network-feasibility` | Passed the topology harness, including its expected unguarded Unix socket control. |
+| `bash tests/run-runtime.sh --network-policy` | Passed all 15 tests. |
+| `bash tests/run-runtime.sh --mux` | Passed all 26 tests. |
+
+The full network run recorded one `tls-malformed` diagnostic for
+`developers.openai.com`, which triggered the live MCP assertion under
+`openai-account`. The rerun passed with auth status `Unsupported` in
+`openai-account` and `policy-denied` in `openai-api`. Three additional
+`mcp list` probes on each version returned `Unsupported` under the account
+profile with clean host diagnostics. An unauthenticated MCP `initialize`
+request returned a server identity and protocol version through the production
+proxy on both images.
+
+The guard suites used the prepared toolchain image
+`a33a4e7a708555af127d04f788dc341decf4402077064deb64bb345720365654`.
+
+`bash ../sandbox-container/tools/shellcheck.sh .` produced identical output
+before and after. Its 98 existing findings comprise one SC2148, one SC2154 and
+25 SC2034 findings in the agent launcher, plus 71 in the shared core and
+fixtures. `git diff --check` and strict change validation passed. The local
+OpenSpec 1.16.0 and the image's OpenSpec 2.0.0 both validated the change.

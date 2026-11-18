@@ -589,8 +589,10 @@ the default policy.
 
 `developers.openai.com` serves the OpenAI documentation MCP server
 (`codex mcp add openaiDeveloperDocs --url https://developers.openai.com/mcp`).
-Its client uses the relay, and Codex 0.167.0 reached only
-`developers.openai.com` for it. `openai-account` includes it, so account users
+Codex 0.169.0 reached only `developers.openai.com` for this server through the
+relay. The command stores the entry under the user's `CODEX_HOME`. Both
+`codex mcp list` and `codex exec` load it from an untrusted workspace.
+`openai-account` includes it, so account users
 reach the server by default. For the API-key method, setup proposes the exact
 `openai-api`; `openai-api-docs` is an opt-in extension that you export and
 qualify once:
@@ -608,7 +610,8 @@ codex-container                        # exported values take precedence over se
 if you exported `CODEX_CONTAINER_NETWORK_PROFILE=openai-account-docs`, switch
 to `openai-account`.
 
-The policy revision is `openai-2026-11-11-v1`, measured against Codex 0.167.0.
+The policy revision is `openai-2026-11-11-v1`, revalidated with Codex 0.169.0 on
+2026-11-18.
 The account inventory comes from the official authentication documentation
 and a static scan of the installed CLI; authenticated sign-in, request and
 refresh are **unverified** until the operator check recorded in
@@ -657,7 +660,7 @@ use `openai-account` or `openai-api-docs`.
 
 ### Codex's own sandbox
 
-Codex's command sandbox cannot run under the guard. With Codex 0.167.0 the
+Codex's command sandbox cannot run under the guard. With Codex 0.169.0 the
 Bubblewrap path needs a Netlink socket to configure loopback in a new network
 namespace, which the guard denies, and the Landlock-only path refuses to run
 without Bubblewrap. In `offline` and `provider`, the wrapper therefore adds a
@@ -924,6 +927,7 @@ Image inputs are pinned in `Containerfile`: the `node:22-bookworm-slim` base by
 digest, Codex CLI by `CODEX_VERSION` and OpenSpec by `OPENSPEC_VERSION`.
 `tests/test_image_pins.py` rejects floating tags, `@latest` and version ranges.
 Codex cannot update itself inside a session because the image root is read-only.
+With OpenSpec 2.0.0, invoke the project's OpenSpec skills as `$openspec-*`.
 
 ### Updating pinned image inputs
 

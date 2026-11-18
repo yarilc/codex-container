@@ -823,7 +823,7 @@ os.execv(real,[real,*args])
                                             env=values | {'CODEX_YOLO': yolo}, input='',
                                             text=True, capture_output=True, timeout=30)
                     self.assert_success(result)
-                    self.assertIn('codex-cli 0.167.0', result.stdout)
+                    self.assertIn('codex-cli 0.169.0', result.stdout)
             self.assertFalse(list(self.runtime.iterdir()))
 
     def test_actual_codex_shell_tool_with_synthetic_responses_api(self):
@@ -851,7 +851,7 @@ os.execv(real,[real,*args])
                 self.assertEqual(sentinel.read_text(), 'actual-codex-tool-ok')
 
     def test_codex_native_sandbox_fails_closed_under_the_guard(self):
-        # Measured for Codex 0.167.0: the Bubblewrap path needs a Netlink socket
+        # Measured for Codex 0.169.0: the Bubblewrap path needs a Netlink socket
         # that the guard denies, and the Landlock-only path refuses to run. Both
         # fail before the command; the guard is never weakened to admit them.
         script = """set +e
