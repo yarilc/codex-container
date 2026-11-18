@@ -1284,3 +1284,35 @@ through the build-only path: `localhost/codex-cli:latest` `f96d5e50eef8`,
 
 The installed and qualified code changes (entry script, core, agent part):
 installations rerun `--container-setup`.
+
+## Adoption of `sandbox-ref-25`: 2026-11-18
+
+Change `adopt-sandbox-ref-25`. Copied from `sandbox-container` tag `sandbox-ref-25`
+(commit `6bed770`): `launcher/core.sh`, `setup/setup.py`, `tests/test_launcher.py`,
+`tests/test_setup.py`. The `tests/test_reference_copy.py` manifest moved to the
+tag; the parity rows were checked by hand.
+
+With delegation enabled, the launcher and guided setup now refuse a reported host
+socket path made only of slashes, and one that exists in the wrapper's namespace
+as a non-socket (change `verify-delegated-socket-path` in `sandbox-container`). A
+path the wrapper cannot see is still accepted as the remapped socket of a
+containerized wrapper. No Codex file changed; the Codex tests ran unchanged. The
+`network-egress` scenario for `--container-qualify` without a mode now states the
+provider default.
+
+Environment: WSL2 6.6.87.2, Podman server 4.9.3; image `localhost/codex-cli:latest`
+`23c66b6f1bf8`, rebuilt through the build-only path (`build-inputs-hash`
+`b57f58660850a52dce9c832e0dcaa2cc2d7b92b4a3f768a861a499a9eeb0d3af`, unchanged).
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment` (host Python, siblings present) | Passed: 22 tests, no skips |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 451 tests, 72 skipped |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 119 tests |
+| `bash tests/run-runtime.sh --setup` | Passed: 67 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 17 tests |
+| `git diff --check` | Passed |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+
+The installed launcher core and setup change: installations rerun `--container-setup`.
