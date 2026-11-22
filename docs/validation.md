@@ -1435,3 +1435,121 @@ before and after. Its 98 existing findings comprise one SC2148, one SC2154 and
 25 SC2034 findings in the agent launcher, plus 71 in the shared core and
 fixtures. `git diff --check` and strict change validation passed. The local
 OpenSpec 1.16.0 and the image's OpenSpec 2.0.0 both validated the change.
+
+## Adoption of `sandbox-ref-28`: 2026-11-22
+
+Change `adopt-sandbox-ref-28`, from `sandbox-ref-25` directly. It takes in
+`sandbox-ref-26`, `sandbox-ref-27` and `sandbox-ref-28`:
+- the process rlimit fallback and systemd-only cgroup delegation;
+- the shared launcher files passing ShellCheck;
+- Windows support on a Podman machine;
+- the Windows setup guidance for agent wrappers.
+
+Copied from `sandbox-container` tag `sandbox-ref-28` (commit `ba1ef14`):
+- updated: `launcher/core.sh`, `network/README.md`, `network/agent_budgets.py`,
+  `network/control.py`, `network/guard.c`, `network/proxy_hardening.py`,
+  `network/qualification_probe.py`, `network/qualification_records.py`,
+  `network/session.py`, `setup/common.py`, `setup/launch.py`, `setup/setup.py`,
+  `setup/smoke.py`, `tests/fake_podman.py`, both fixture `launcher.sh`,
+  `tests/test_alignment.py`, `tests/test_guard.py`, `tests/test_launcher.py`,
+  `tests/test_qualification.py`, `tests/test_session.py` and
+  `tests/test_setup.py`;
+- added: the five `launcher/windows/` files, `tests/test_windows_bootstrap.py`,
+  `tests/test_windows_enter.py` and `tests/windows/shim_tests.ps1`.
+
+The `tests/test_reference_copy.py` manifest moved to the tag. The tool also
+rewrote the Antigravity, OpenCode and Pi parity rows, which stay on
+`sandbox-ref-25`; they were restored by hand.
+
+By hand, as `docs/propagation.md` says:
+- `codex-container.ps1` is a byte-for-byte copy of `sandbox-container.ps1`;
+- `.gitattributes` was copied. The LF rewrite changed nothing: every tracked
+  file was already LF in the index and the working tree;
+- `agent/launcher.sh` gained the ShellCheck header of the reference agent part,
+  which clears its 27 findings (25 `SC2034`, 1 `SC2148`, 1 `SC2154`).
+
+Codex's own tests changed where the shared behavior did, as in Claude:
+- `tests/test_setup_wrapper.py` is Claude's file, byte for byte: the two files
+  were identical before. It adds a failing `systemctl`, the budget plan with the
+  rlimit fallback and `cgroupfs`, and the case for setup without a launch
+  service;
+- `tests/test_runtime.py`: the budget checks follow the delegated controllers
+  and the process mechanism, and the process probe uses a budget of 128 with
+  200 children.
+
+The README, `docs/setup.md` and `AGENTS.md` cover:
+- the Windows entry for Codex, with the device-code login and
+  `$env:OPENAI_API_KEY`;
+- the installer;
+- host CA trust on Windows;
+- the Windows limits, including Bitdefender;
+- the `cgroupfs` budgets, the rlimit fallback and the guard as init;
+- the setup changes.
+
+**This runner.** WSL2 `6.18.58.1-microsoft-standard-WSL2`, Podman server
+4.9.3, the `systemd` cgroup manager and controllers `[cpu memory pids]`.
+- The engine had no `localhost/codex-cli:latest`. Its
+  `localhost/codex-cli:setup-be4219e7f2364ccbb675f772ba962c40` predates the
+  Codex 0.169.0 pin, so the launcher refused it as stale (`build-inputs-hash`
+  `b57f5866...`, inputs `cb457cf0...`). The adoption changes no build input.
+- `localhost/codex-cli:latest` `8dbc6c66b85c` was rebuilt with
+  `--container-build`, `build-inputs-hash` `cb457cf0...`. The runner's network
+  intercepts TLS, so the build used host CA trust with the session's CA bundle
+  as the build secret.
+- For the guard toolchain,
+  `localhost/codex-guard-toolchain:setup-be4219e7f2364ccbb675f772ba962c40`
+  was also tagged `localhost/codex-guard-toolchain:development`, the name that
+  `--guard`, `--qualification` and `--network` use.
+- The unit discovery and `--wrapper` used the older image only as the test
+  container.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment` (host Python, siblings present) | Passed: 26 tests, no skips |
+| `bash tools/shellcheck.sh ../codex-container`, `bash tools/powershell.sh ../codex-container` (from `sandbox-container`) | Passed: no finding, 62 shim cases |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 506 tests, 80 skipped |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 123 tests, 1 skipped |
+| `bash tests/run-runtime.sh --shared` | Passed: 303 tests, 35 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 88 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 31 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 25 tests, 1 skipped (`--guard-idle`) |
+| `bash tests/run-runtime.sh --network` | Passed: 24 tests, 1 skipped (external `developers.openai.com` check) |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 17 tests, including the budget checks above and Codex's own sandbox |
+| `git diff --check` | Passed |
+
+**Windows** (operator, 2026-11-22). Windows WSL 3.0.5.0, kernel 6.18.58.1-1,
+Landlock ABI 7. The Podman Desktop machine `podman-machine-default` uses the
+`cgroupfs` manager, with Ubuntu running. The checkouts were snapshots of this
+branch and of `sandbox-container` in `C:\Work`.
+
+| Step | Result |
+| --- | --- |
+| Setup from `codex-container.ps1`: provider networking with the account method, host CA trust with `/etc/ssl/certs/ca-certificates.crt`, permission bypass on, images refreshed, login postponed | The plan printed `enforced agent budgets: none`, the `cgroupfs` notices and the process rlimit for the agent (512) and the proxy (128). Images built in the machine, `Sandbox qualification: locally-qualified`, `Sandbox: ready`. The next step read `Next authentication action: codex-container.ps1 login --device-auth (or reuse your selected existing account state).`, with no distribution path |
+| `codex-container.ps1 login --device-auth` from a project folder | Provider session with `openai-account`, Codex 0.169.0. Device code entered in the Windows browser, `Successfully logged in` |
+| A Codex session | Codex listed the project with `rg --files` and read a file, then ended with Ctrl+C. A resumed session (`codex resume`) ended with `$LASTEXITCODE` 0. The operator reported no problem; the `podman ps -a` output was not sent back |
+| Codex's own sandbox: `$env:CODEX_CONTAINER_NETWORK = 'unrestricted'`, then `--container-shell -c "codex sandbox -- sh -c '...'"` | `CODEX_SANDBOX_RAN` and `CODEX_SANDBOX_WRITE_DENIED`, exit status 0; `denied-file` was not created. Bubblewrap works in the machine's rootless engine |
+| `windows-validate.ps1 -Checkout C:\Work\codex-container -Install -StopMachine`, Windows PowerShell 5.1 | 55 passed, 0 failed, 1 skipped (restricted mode without a prepared installation, because setup saved provider). Installer, user `PATH`, uninstall, stopped machine, a distribution started by WSL alone, the restart with Podman, "Offline qualification", "Offline session" (`blocked`), "Redirected input" and "One engine for sessions and the machine" passed |
+| The same without `-Install -StopMachine`, PowerShell 7.7.0 | 43 passed, 0 failed, 3 skipped |
+| API method, with a dummy key: `$env:OPENAI_API_KEY`, then `--container-shell -c 'echo "$OPENAI_API_KEY"'` | The provider session used `openai-api` and printed the value. A real-key model request is unavailable. The setup output of this step was not sent back |
+
+Notes:
+
+- **`raw.githubusercontent.com` is denied in provider sessions.** Codex
+  0.169.0 tries to reach it during a session, and the proxy refuses it
+  (`policy-denied`), as the `openai-account` profile requires. The session is
+  unaffected.
+- **The `transport-closed` diagnostic.** At session end, the
+  `recent protected egress diagnostics` line with `transport-closed` is the
+  behavior already recorded on Linux.
+- **A shared setup prompt prints its fallback text letter by letter.** For a
+  profile without shared directories, such as Codex's, the state-mode prompt
+  reads `shared n, o,  , o, t, h, e, r configuration`. The shared
+  `setup/setup.py` joins the string `'no other'` instead of a one-item tuple,
+  since 2026-11-07, on Linux too. It is cosmetic and is left to a reference
+  fix.
+- **The machine keeps the method of the last setup.** The operator reruns
+  setup to return to the account method.
+
+The installed launcher core, setup and guard change, so installations rerun
+`--container-setup`.

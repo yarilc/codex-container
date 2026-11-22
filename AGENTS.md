@@ -9,6 +9,13 @@
   core owns argument parsing, mounts, user mapping, Podman checks and the
   session lifecycle; `docs/launcher-contract.md` in `sandbox-container` is its
   contract.
+- `codex-container.ps1` is the thin Windows entry, identical in every
+  wrapper: it runs the shared shim `launcher/windows/core.ps1`, which starts
+  the managed installation inside a Podman machine's WSL distribution through
+  `launcher/windows/bootstrap.sh`, and runs sessions and setup in the machine's
+  systemd namespaces through `launcher/windows/enter.sh`. Windows supports
+  every network mode that setup prepared, without Podman delegation; see the
+  README's Windows section.
 - `Containerfile` defines the Codex runtime image and bundled tools.
 - `README.md` documents setup, usage, and security considerations.
 - `openspec/specs/` contains current behavior contracts; `openspec/changes/`
@@ -35,11 +42,12 @@
 `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`,
 `test_qualification.py`, `test_guard.py`, `test_session.py`,
 `test_network_feasibility.py` and their fixtures) are copied unchanged from
-`sandbox-container` at tag `sandbox-ref-25`. Never edit them here and never add an
+`sandbox-container` at tag `sandbox-ref-28`. Never edit them here and never add an
 agent identifier (`codex`, `openai`) to them: fix a defect in `sandbox-container`
 first, then copy the files again and update the manifest in
 `tests/test_reference_copy.py`. Codex values come only from `agent/`, the
-entry script, `Containerfile`, `.containerignore` and the per-agent tests
+entry scripts (`codex-container.sh`, and `codex-container.ps1`, the same text
+in every wrapper under the wrapper's name), `Containerfile`, `.containerignore` and the per-agent tests
 (`test_wrapper.py` for Codex's agent part only, `test_setup_wrapper.py`, `test_runtime.py`, `test_network_runtime.py`,
 `network_tls_fixture.py`, `test_setup_runtime.py`, `test_image_pins.py`,
 `test_reference_copy.py`, `run-runtime.sh`). `tests/test_alignment.py` enforces
@@ -63,7 +71,21 @@ CODEX_CONTAINER_NETWORK=offline ./codex-container.sh --container-qualify  # Rest
 bash -n codex-container.sh launcher/core.sh agent/launcher.sh  # Check Bash syntax
 git diff --check                       # Check whitespace
 openspec validate --specs --strict      # Validate main specifications
+bash ../sandbox-container/tools/shellcheck.sh .   # ShellCheck at warning level
+bash ../sandbox-container/tools/powershell.sh .   # PSScriptAnalyzer and shim tests
 ```
+
+Every tracked `*.sh` file, the shared `launcher/core.sh` and launcher fixtures
+included, passes `tools/shellcheck.sh` of `sandbox-container` (pinned
+ShellCheck, warning level). Codex's agent part `agent/launcher.sh` starts with
+`# shellcheck shell=bash disable=SC2034,SC2154`, because the core reads its data
+and defines the state its hooks read.
+
+Every tracked `*.ps1` file passes `tools/powershell.sh` of `sandbox-container`
+(pinned PSScriptAnalyzer, warning level), which also runs the shared shim tests
+`tests/windows/shim_tests.ps1` against a fake `wsl.exe`. The thin entry and the
+shim stay ASCII and run on Windows PowerShell 5.1 and PowerShell 7; Windows
+PowerShell 5.1 itself is validated on a Windows host.
 
 Host Linux rootless Podman is verified before image operations and startup,
 independently of delegation, YOLO, shell mode, and explicit builds. Local Podman
@@ -183,8 +205,9 @@ rootless operation does not retain project-only access. YOLO and delegation
 are independent; disabled YOLO does not override native flags or settings. Never embed
 credentials or add `--privileged`. Preserve absolute workspace paths for child
 bind mounts. Parent mounting is opt-in and exposes all contents read/write;
-sensitive roots (`/`, system directories, `/tmp`, the physical home and
-`/mnt/<letter>`) are refused unless exactly `CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1`.
+sensitive roots (`/`, system directories, `/tmp`, the physical home,
+`/mnt/<letter>` and the Windows system and profile folders on those drives)
+are refused unless exactly `CODEX_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1`.
 Do not broaden mounts beyond that documented behavior. Every session drops all
 capabilities, sets no-new-privileges and has validated, inspected memory, CPU
 and process budgets (`CODEX_CONTAINER_MEMORY_LIMIT`/`CPU_LIMIT`/`PIDS_LIMIT`,
@@ -192,7 +215,16 @@ defaults 4g/2/512) plus an optional `CODEX_CONTAINER_RUN_TIMEOUT`; never add
 capabilities back or weaken a budget the engine can enforce to fix a tool. A
 budget whose cgroup v2 controller the rootless engine does not delegate
 (`Host.CgroupControllers`) is omitted, announced and bound into the
-qualification identity; never require host changes to delegate it. Sessions
+qualification identity; never require host changes to delegate it. Reported
+controllers count as delegated only with the `systemd` cgroup manager
+(`Host.CgroupManager`): a rootless `cgroupfs` engine reports controllers but
+applies no limits, so it delegates none (`delegated()` in
+`network/agent_budgets.py`, mirrored in `launcher/core.sh`). The process
+budget alone falls back to a soft and hard process rlimit (`--ulimit nproc`)
+when the engine kernel (`Host.Kernel`) is Linux 5.14 or later, which counts it
+per container; the mechanism (`cgroup`, `rlimit` or `none`) is one rule in
+`network/agent_budgets.py` and `launcher/core.sh`, verified and qualified like
+a cgroup budget. Sessions
 mask `/run/secrets` and `/dev/shm` with empty read-only tmpfs mounts and leave
 `/dev` and its `devpts` to the engine (an explicit `devpts` gets
 `ptmxmode=000`, so no pseudo-terminal can be opened); do not reintroduce
