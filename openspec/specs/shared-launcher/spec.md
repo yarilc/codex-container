@@ -54,8 +54,8 @@ Codex's launcher behavior SHALL be tested by the shared `tests/test_launcher.py`
 - **THEN** it runs both `tests/test_launcher.py` and `tests/test_wrapper.py` against this checkout
 
 #### Scenario: Approval bypass combinations
-- **WHEN** `tests/test_wrapper.py` runs every combination of `CODEX_YOLO` and `CODEX_CONTAINER_PODMAN=1` in unrestricted shared and isolated modes
-- **THEN** only `CODEX_YOLO` determines the `--yolo` argument, and only the Podman opt-in determines the delegation mounts and variables
+- **WHEN** `tests/test_wrapper.py` runs every combination of `CODEX_YOLO` and shell mode in unrestricted shared and isolated modes
+- **THEN** only `CODEX_YOLO` determines the `--yolo` argument, and no combination mounts a Podman socket
 
 ### Requirement: Launcher files pass ShellCheck
 `launcher/core.sh`, `launcher/windows/bootstrap.sh`, the launcher fixtures and every `agent/launcher.sh` SHALL each pass ShellCheck alone, at warning level. Each SHALL declare its shell with a `shell=bash` directive. A suppressed finding SHALL concern only data and state the core shares with the agent part, or an indirectly assigned variable, and SHALL carry a comment naming the reason. The reference SHALL provide a check with a pinned ShellCheck version that runs on any checkout.
