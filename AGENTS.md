@@ -14,8 +14,8 @@
   the managed installation inside a Podman machine's WSL distribution through
   `launcher/windows/bootstrap.sh`, and runs sessions and setup in the machine's
   systemd namespaces through `launcher/windows/enter.sh`. Windows supports
-  every network mode that setup prepared, without Podman delegation; see the
-  README's Windows section.
+  every network mode that setup prepared; host Podman delegation was removed
+  there as on Linux. See the README's Windows section.
 - `Containerfile` defines the Codex runtime image and bundled tools.
 - `README.md` documents setup, usage, and security considerations.
 - `openspec/specs/` contains current behavior contracts; `openspec/changes/`
@@ -41,8 +41,10 @@
 `test_agent_profile.py`, `test_network_policy.py`, `test_mux.py`,
 `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`,
 `test_qualification.py`, `test_guard.py`, `test_session.py`,
-`test_network_feasibility.py` and their fixtures) are copied unchanged from
-`sandbox-container` at tag `sandbox-ref-28`. Never edit them here and never add an
+`test_network_feasibility.py`, `test_engine.py`, `test_toolchains.py`,
+`test_windows_bootstrap.py`, `test_windows_enter.py`, `guard_terminal_probe.py`
+and their fixtures) are copied unchanged from
+`sandbox-container` at tag `sandbox-ref-36`. Never edit them here and never add an
 agent identifier (`codex`, `openai`) to them: fix a defect in `sandbox-container`
 first, then copy the files again and update the manifest in
 `tests/test_reference_copy.py`. Codex values come only from `agent/`, the
@@ -88,24 +90,20 @@ shim stay ASCII and run on Windows PowerShell 5.1 and PowerShell 7; Windows
 PowerShell 5.1 itself is validated on a Windows host.
 
 Host Linux rootless Podman is verified before image operations and startup,
-independently of delegation, YOLO, shell mode, and explicit builds. Local Podman
-needs no API service. Explicit absolute same-host Unix `CONTAINER_HOST` launch
-connections require their own service even with delegation disabled; named,
-TCP/SSH, implicit remote, and unverifiable contexts are rejected. Only sessions
-using `CODEX_CONTAINER_PODMAN=1` require a delegation socket; start it with
-`podman system service --time=0 unix:///run/user/$(id -u)/podman/podman.sock`.
-Enabled sessions select the first nonempty `CODEX_CONTAINER_PODMAN_SOCKET`,
-Unix `CONTAINER_HOST` path, or `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`.
-They explicitly query that socket and require `Host.Security.Rootless`
-to report `true` before image inspection, building, or startup. The selected
-socket must be absolute, readable, and writable. Use the service's absolute
-`Host.RemoteSocket.Path` as the bind source, which may differ from the visible
-socket in a containerized caller. Both engines and all absolute bind sources
-must refer to the same host; forwarded cross-host sockets are unsupported. Rootful,
-unreachable, or unverifiable services produce an actionable error in both
-Codex and shell modes, including `--container-build`.
-The Podman command remains installed without the opt-in, but the wrapper omits
-the socket mount and removes `CONTAINER_HOST` from the session environment.
+independently of YOLO, shell mode, and explicit builds. Local Podman needs no
+API service. Explicit absolute same-host Unix `CONTAINER_HOST` launch
+connections verify that launch service, which never reaches the session; named,
+TCP/SSH, implicit remote, and unverifiable contexts are rejected. All absolute
+bind sources must refer to the same host; forwarded cross-host sockets are
+unsupported. Host Podman delegation was removed: an exact
+`CODEX_CONTAINER_PODMAN=1` stops every launch with migration guidance before
+any engine query, and `CODEX_CONTAINER_PODMAN_SOCKET` is ignored.
+Container-based tests use the session container engine instead: a private
+rootless engine started with the session when the toolchain library holds image
+toolchains (`launcher/engine/`, the `session-container-engine` capability).
+Never mount a host Podman socket into a session or into the engine. The Podman
+command stays installed as the engine's client; without an engine the session
+has no `CONTAINER_HOST`.
 Both Codex and shell modes use a read-only image root with writable workspace,
 persistent `CODEX_HOME`, and ephemeral `/tmp`, `/var/tmp`, `/run`, and home.
 `CODEX_HOME` defaults to the caller's shared `~/.codex`; a separate directory
@@ -118,7 +116,7 @@ State checks do not audit ancestors, ACLs, or every existing file.
 Use `--container-git-worktree` from a worktree root to expose its immediate
 physical parent while preserving the starting directory.
 
-The launcher behavior (socket verification, YOLO parsing, naming, signals,
+The launcher behavior (launch engine verification, YOLO parsing, naming, signals,
 creation recovery, cleanup, TTY handling, temporary storage, environment and
 image freshness) lives in the shared core and is tested once by
 `tests/test_launcher.py`; change it in `sandbox-container`, never here. In
@@ -137,8 +135,8 @@ saved mode. Restricted Codex launches add a protected
 `--no-daemon -c sandbox_mode="danger-full-access"` because Codex's own sandbox cannot start
 under the guard; never weaken the guard to make it work. Every image build,
 including the automatic build of a missing image, requires the exact
-`CODEX_CONTAINER_MAINTENANCE=1`. `offline` and `provider` reject
-`CODEX_CONTAINER_PODMAN=1`, require host Python 3, a same-host Unix rootless
+`CODEX_CONTAINER_MAINTENANCE=1`. `offline` and `provider` require host
+Python 3, a same-host Unix rootless
 Netavark service with Podman >= 4.9, Landlock ABI >= 3, a protected
 installation with the guard in `network/bin`, and a current qualification
 report; they run the image by its immutable ID and never fall back to
@@ -163,7 +161,7 @@ Every script change must
 pass syntax and whitespace checks. Verify argument order and boundaries,
 default/parent mounts, spaces, symlinks, and shell mode. With usable Podman,
 check image build, Codex startup, isolated `CODEX_HOME` persistence, local Git
-worktrees, and child-container bind mounts. Use disposable local repositories
+worktrees, and child-container bind mounts through the session container engine. Use disposable local repositories
 and configuration; record unavailable checks separately from mock results.
 Run `bash tests/run-runtime.sh --wrapper` for the shared launcher and wrapper suites in a runner
 container (the agent sandbox mounts `/tmp` noexec and cannot bind Unix sockets
@@ -183,6 +181,16 @@ pseudo-terminal for interactive checks and pipes/files for nonterminal checks.
 Cover concurrent reservation, signals, owned cleanup, and exit 125. Record results and
 limitations in `docs/validation.md`; do not treat skipped or synthetic tests
 as real engine verification, and do not use actual Codex credentials in tests.
+The session engine cases need `localhost/codex-cli-engine:latest` and the
+pinned alpine sample image in the runner's engine; they skip, asking to prepare
+an image, without them.
+Where no terminal attaches to a `--read-only` container through the runner's
+Podman client, because the engine gives it a read-only `/dev` (the runtime
+image's Podman 4.3.1 against Podman 5.8 with crun 1.27), the guarded terminal
+tests skip with the engine's error (`tests/guard_terminal_probe.py`). Record
+them as unavailable there. Then record an interactive session opened on that
+host with its own client: it is the evidence for the `container-isolation`
+scenario "Terminal attaches on an engine that mounts /dev read-only".
 
 ## OpenSpec Workflow
 
@@ -199,10 +207,16 @@ identify security/mount changes, and update `README.md` when usage changes.
 
 ## Security & Configuration
 
-Treat Codex configuration and the Podman socket as sensitive. Socket delegation
-permits new host mounts outside the workspace with the service user's authority;
-rootless operation does not retain project-only access. YOLO and delegation
-are independent; disabled YOLO does not override native flags or settings. Never embed
+Treat Codex configuration and the host Podman socket as sensitive. Never
+expose the host Podman API socket to a session. The session container engine
+shares the session's network namespace, mounts only the workspace and the
+library's read-only image store, holds no secrets, and keeps only its documented
+hardening exceptions (design D4 of the reference's session engine change, and
+the startup step that delegates the engine's own cgroup subtree, design D1 of
+`support-nested-systemd-containers`); never widen them to make a nested tool
+work. Only that startup step runs as the root of the engine's user namespace;
+the launcher's commands in the engine run as its `podman` user. Disabled YOLO
+does not override native flags or settings. Never embed
 credentials or add `--privileged`. Preserve absolute workspace paths for child
 bind mounts. Parent mounting is opt-in and exposes all contents read/write;
 sensitive roots (`/`, system directories, `/tmp`, the physical home,
@@ -220,11 +234,15 @@ controllers count as delegated only with the `systemd` cgroup manager
 (`Host.CgroupManager`): a rootless `cgroupfs` engine reports controllers but
 applies no limits, so it delegates none (`delegated()` in
 `network/agent_budgets.py`, mirrored in `launcher/core.sh`). The process
-budget alone falls back to a soft and hard process rlimit (`--ulimit nproc`)
-when the engine kernel (`Host.Kernel`) is Linux 5.14 or later, which counts it
-per container; the mechanism (`cgroup`, `rlimit` or `none`) is one rule in
+budget alone falls back to a soft and hard process rlimit when the engine
+kernel (`Host.Kernel`) is Linux 5.14 or later, which counts it per user
+namespace; the mechanism (`cgroup`, `rlimit` or `none`) is one rule in
 `network/agent_budgets.py` and `launcher/core.sh`, verified and qualified like
-a cgroup budget. Sessions
+a cgroup budget. Each container's first process sets that limit: a fixed
+`/bin/sh` step for the agent and the proxy, the startup program for the engine.
+Never use `--ulimit nproc`: the engine applies it before it creates the
+container's user namespace, so the kernel counts every container of the user
+against it. Sessions
 mask `/run/secrets` and `/dev/shm` with empty read-only tmpfs mounts and leave
 `/dev` and its `devpts` to the engine (an explicit `devpts` gets
 `ptmxmode=000`, so no pseudo-terminal can be opened); do not reintroduce

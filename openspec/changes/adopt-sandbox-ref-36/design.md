@@ -193,8 +193,11 @@ The runtime image's build context is `Containerfile`, `.containerignore`,
      also takes the reference's "Leftover delegation opt-in is refused".
    - **New capability:** `session-container-engine` is the reference's main
      spec, with `CODEX_CONTAINER_TOOLCHAINS`.
-   - **Known warning:** the strict check warns that "Fixed engine hardening
-     exceptions" is over 500 characters, as in the reference and Claude.
+   - **Known warnings:** the strict check of the change warns that "Fixed
+     engine hardening exceptions" is over 500 characters, as in the reference
+     and Claude. After the sync, seven more requirements of Codex's main specs
+     are over 500 characters, because they take the reference's text, which is
+     over 500 characters there too (task 2.7).
    - **Rejected:** adding the reference's `container-launcher` beside
      `container-session`. It would duplicate a dozen Codex requirements under
      other names.

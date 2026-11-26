@@ -3,8 +3,10 @@
 set -Eeuo pipefail
 project_root=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 image=${CODEX_CONTAINER_IMAGE:-localhost/codex-cli:latest}
-socket=${CODEX_CONTAINER_PODMAN_SOCKET:-}
-if [[ -z "$socket" && "${CONTAINER_HOST:-}" == unix:///?* ]]; then
+# The launch service's socket: a Unix CONTAINER_HOST, else the runtime directory's.
+# Host Podman delegation was removed, so no delegation override applies.
+socket=''
+if [[ "${CONTAINER_HOST:-}" == unix:///?* ]]; then
     socket=${CONTAINER_HOST#unix://}
 fi
 socket=${socket:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock}
@@ -14,9 +16,12 @@ pattern=test_runtime.py
 guard_environment=()
 # The guarded Windows-workspace check writes below the checkout's .test-state.
 project_mode=ro
-# Shared suites copied from the reference, run without real-engine opt-ins.
+# Shared suites copied from the reference, run without real-engine opt-ins: every
+# shared test module of tests/test_alignment.py except test_setup, which --setup
+# runs with a writable checkout.
 shared=(test_reference_copy test_alignment test_launcher test_agent_profile test_network_policy test_mux test_tls_client_hello
-    test_tls_proxy test_platform test_qualification test_guard test_session test_network_feasibility)
+    test_tls_proxy test_platform test_qualification test_guard test_session test_network_feasibility
+    test_engine test_toolchains test_windows_bootstrap test_windows_enter)
 case "${1:-}" in
     # The shared launcher tests and this wrapper's own: test_launcher.py, test_wrapper.py.
     --wrapper) pattern='test_[lw][ar][au]*.py' ;;
