@@ -66,8 +66,12 @@ class SetupWrapperTests(unittest.TestCase):
         self.bin = self.base / 'bin'
         self.bin.mkdir()
         self.log = self.base / 'calls.jsonl'
+        # An empty private runtime directory: the default endpoint never reaches
+        # the host's own Podman socket, which a host with podman.socket would have.
+        runtime = self.base / 'runtime'
+        runtime.mkdir(mode=0o700)
         self.env = {'PATH': str(self.bin) + ':' + os.environ['PATH'], 'HOME': str(self.home),
-                    'SETUP_TEST_LOG': str(self.log)}
+                    'SETUP_TEST_LOG': str(self.log), 'XDG_RUNTIME_DIR': str(runtime)}
         fake = self.bin / 'podman'
         fake.write_text(FAKE_PODMAN)
         fake.chmod(0o700)
