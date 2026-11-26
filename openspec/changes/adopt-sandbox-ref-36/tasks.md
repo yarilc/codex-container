@@ -118,7 +118,7 @@
     - the runtime suites skip without an engine;
     - the validation reports only "Fixed engine hardening exceptions".
 
-## 3. Validation on WSL
+## 3. Development validation on WSL
 
 - [ ] 3.1 Have the operator run the adoption runner on WSL (design decision 7).
   - **Preparation:**
@@ -139,30 +139,18 @@
     - `tests.test_setup_wrapper` passes.
 
   Analyse the archive in a new empty directory. A failure in shared code pauses the change for a fix in `sandbox-container` under a new tag. A Codex-only failure is fixed on the branch, and only its entries are rerun with `--only`, into a new archive.
-- [ ] 3.2 Have the operator run `.\tools\windows-validate.ps1 -Checkout <the Windows checkout of codex-container>` from `sandbox-container`, on Windows PowerShell 5.1, with the checkout on `adopt-sandbox-ref-36`.
-
-  Verify: no case fails, saved delegation is refused by the bootstrap, and "Session with library images" passes for Codex.
-- [ ] 3.3 Have the operator check real use on WSL (design decision 7).
-  - **Steps:**
-    - rerun `codex-container --container-setup` from the branch;
-    - add one image toolchain, for example `--container-toolchain add` with a catalog name or a local image;
-    - open one session.
-  - **Verify:**
-    - setup completes, builds the engine image and migrates any saved delegation;
-    - in the session, `CONTAINER_HOST=tcp://127.0.0.1:2375`;
-    - `podman info` reports rootless operation;
-    - `podman run --rm <the library image> true` succeeds.
 
 ## 4. Record, merge and parity
 
 - [ ] 4.1 Record the adoption and merge it.
   - **Record:** add the `sandbox-ref-36` adoption section to `docs/validation.md`, from the tool's template, with:
-    - every result of tasks 2.8 and 3.1 to 3.3;
+    - every result of tasks 2.8 and 3.1;
     - the engine label and the expected skips;
-    - the checks not run, with the reference's `ref-36` runs as their evidence: Rocky, the systemd and cgroup delegation cases, and the runner inside a session.
+    - the checks not run, with the reference's `ref-36` runs as their evidence: Rocky, the systemd and cgroup delegation cases, and the runner inside a session;
+    - the release risk (design decision 7): the Windows entry was not run against a real Podman machine. Its smoke test, after the release, is `.\tools\windows-validate.ps1 -Checkout <the Windows checkout>` from `sandbox-container`, on Windows PowerShell 5.1, with the updated installation. It should report no failed case, the refusal of saved delegation by the bootstrap, and a passing "Session with library images". A defect it finds gets its own change.
   - **Parity:**
     - Codex's implementation cell names the session container engine for image toolchains, with systemd in nested containers;
-    - its real enforcement cell gains the WSL and Windows `sandbox-ref-36` entries;
+    - its real enforcement cell gains the WSL `sandbox-ref-36` entry;
     - copy the reference row from `sandbox-container`.
   - **Merge:** commit with the tool's message and the co-author trailer, then merge into `main`.
   - **Verify:** `python3 -m unittest tests.test_reference_copy tests.test_alignment` passes on `main`.
@@ -177,5 +165,6 @@
   - it retires `container-podman-access`;
   - it creates `session-container-engine`;
   - it moves the launch-engine requirements to `container-session`.
+- A reference change in `sandbox-container` that aligns `docs/propagation.md` and the tool's checklist with the rule of development tests only: `launcher/windows/` maps to a release risk with its smoke test instead of a manual validation step.
 - A reference change in `sandbox-container`: when the runner offers `--shared`, the checklist also names the changed shared modules that the runner's list lacks. It should come before Antigravity, OpenCode and Pi adopt `sandbox-ref-36`, whose lists lack the same four modules.
 - Antigravity, OpenCode and Pi adopt `sandbox-ref-36` from `sandbox-ref-28`, with this change as their model.
