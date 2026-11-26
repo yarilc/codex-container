@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import uuid
 
+from sandbox_profile import REAL_PROFILE
 from test_setup import pty_run
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,7 +48,7 @@ class SetupRuntime(unittest.TestCase):
             + "if args[:2] == ['image','inspect'] and '{{.Id}}' in args and args[-1] in " + repr(('localhost/codex-cli:latest', prepared_runtime)) + ":\n"
             + ' print(' + repr(prepared_runtime) + '); sys.exit(0)\n'
             + "if args[:2] == ['image','exists'] and args[-1] in " + repr(('localhost/codex-egress:local', prepared_proxy)) + ": sys.exit(0)\n"
-            + "if args[:2] == ['image','inspect'] and args[-1] in " + repr(('localhost/codex-egress:local', prepared_proxy)) + ":\n"
+            + "if args[:2] == ['image','inspect'] and '{{.Id}}' in args and args[-1] in " + repr(('localhost/codex-egress:local', prepared_proxy)) + ":\n"
             + ' print(Path(' + repr(str(self.proxy_selection)) + ').read_text().strip()); sys.exit(0)\n'
             + 'os.execv(' + repr(self.real_podman) + ',[' + repr(self.real_podman) + ',*args])\n')
         shim.chmod(0o700)
@@ -64,8 +65,13 @@ class SetupRuntime(unittest.TestCase):
                                        env=self.env, text=True).strip()
 
     def clean_tags(self):
+        # Every tag setup names after a release this test created: the recorded runtime
+        # image, and the engine, guard toolchain and proxy tags. Release names are unique,
+        # so these tags are the test's; an image with other names only loses the tag.
         for path in self.root.glob('releases/*/setup.json'):
             self.tags.add(json.loads(path.read_text())['image'])
+            for kind in ('engine', 'toolchain', 'proxy'):
+                self.tags.add(REAL_PROFILE.image(kind, 'setup-' + path.parent.name))
         for tag in self.tags:
             subprocess.run(['podman', 'image', 'rm', tag], capture_output=True, timeout=30)
 
@@ -76,12 +82,16 @@ class SetupRuntime(unittest.TestCase):
         if mode != 'offline':
             answers += [('Authentication method', 'account')]
         answers += [('State mode', 'isolated'), ('Private isolated state directory', str(self.base / 'state')),
-                    ('Delegate the host Podman API', 'no'), ('Enable Codex permission bypass', 'no'),
+                    ('Enable Codex permission bypass', 'no'),
                     ('Use parent-directory worktree scope', 'no'), ('Agent memory limit', ''),
                     ('Agent CPU limit', ''), ('Agent process limit', ''), ('Session lifetime in seconds', ''),
                     ('Trust a host CA bundle', 'yes' if ca else 'no')]
         if ca:
-            answers += [('CA bundle file', '/etc/ssl/certs/ca-certificates.crt')]
+            # Setup checks the bundle in the runner, and the engine mounts it from its host:
+            # a copy in the native test state has the same path in both.
+            bundle = self.base / 'ca-bundle.pem'
+            shutil.copyfile('/etc/ssl/certs/ca-certificates.crt', bundle)
+            answers += [('CA bundle file', str(bundle))]
         answers += [('Managed launch command path', str(self.command)),
                     ('Podman launch endpoint', self.env['CONTAINER_HOST'])]
         if mode == 'provider':

@@ -2,7 +2,7 @@
 
 ## 1. Adopt `sandbox-ref-36`
 
-- [ ] 1.1 Copy the tag's shared files with `tools/propagate.py` (design decision 1).
+- [x] 1.1 Copy the tag's shared files with `tools/propagate.py` (design decision 1).
   - **Before:** check that `sandbox-ref-36` exists in `sandbox-container`, then commit this change directory on `main`.
   - **Copy:** from `sandbox-container`, run `python3 -I tools/propagate.py ../codex-container sandbox-ref-28 sandbox-ref-36` (dry run), then `--apply`.
   - **Verify:**
@@ -13,18 +13,16 @@
 
 ## 2. Codex's tests, runner, documentation and specs
 
-- [ ] 2.1 Rewrite the delegation cases of `tests/test_wrapper.py` (design decision 2).
+- [x] 2.1 Rewrite the delegation cases of `tests/test_wrapper.py` (design decision 2).
   - **YOLO grid:** `test_yolo_case_insensitive_and_delegation_independent` becomes `test_yolo_case_insensitive_and_no_socket`. It runs shell × YOLO value, keeps the argument checks and checks that no argument names `podman.sock`.
-  - **Opt-in grid:** `test_permissions_independent_and_exact_opt_in` becomes `test_leftover_delegation_opt_in_is_refused`:
-    - with `CODEX_CONTAINER_PODMAN=1`, the launch exits 1 with "host Podman delegation was removed" and makes no `create` call;
-    - `''`, `0`, `true`, `yes` and `unexpected` launch normally, with the bypass, hardening and no-socket checks.
+  - **Opt-in grid:** `test_permissions_independent_and_exact_opt_in` becomes `test_permissions_and_hardening_independent_of_yolo`. It varies only `CODEX_YOLO`, and keeps the bypass, hardening and no-socket checks. The refusal of a leftover `CODEX_CONTAINER_PODMAN=1`, and the other values being ignored, are launcher behavior: the shared `tests/test_launcher.py` covers them, and spec `shared-launcher` keeps them out of `test_wrapper.py`.
   - **Help:** the help case checks "Host Podman delegation was removed: CODEX_CONTAINER_PODMAN=1 stops startup.".
   - **Removed:** the `AF_UNIX` fixture, `CODEX_CONTAINER_PODMAN_SOCKET`, `import socket`, and `CODEX_CONTAINER_PODMAN` in the restricted environment. The `RestrictedTests` overrides follow the new names.
   - **Verify:**
     - `grep -n "PODMAN_SOCKET\|AF_UNIX\|import socket\|podman/podman.sock' in" tests/test_wrapper.py` finds nothing;
-    - `python3 -m unittest tests.test_wrapper` passes here, or fails only as on `main` (task 2.8);
+    - `python3 -m unittest tests.test_wrapper` passes here, or fails only as on `main` (task 2.8). Here the help case passes, with the migration line, and the other cases stop at the private state check on drvfs;
     - the `--wrapper` entry of task 3.1 passes.
-- [ ] 2.2 Rewrite the delegation cases of `tests/test_runtime.py` and add the engine cases (design decision 2).
+- [x] 2.2 Rewrite the delegation cases of `tests/test_runtime.py` and add the engine cases (design decision 2).
   - **Setup:** `CODEX_CONTAINER_PODMAN='0'` and the socket selection leave `setUp`.
   - **Refusal:** the image environment case checks the cleared defaults without a socket, then the refusal of `CODEX_CONTAINER_PODMAN=1`, in both state modes.
   - **Delegated variants:**
@@ -40,7 +38,7 @@
     - `grep -n "CODEX_CONTAINER_PODMAN" tests/test_runtime.py` finds only the refusal case;
     - the module parses, and its classes skip without `SANDBOX_RUNTIME_TESTS`;
     - the default runtime entry of task 3.1 passes.
-- [ ] 2.3 Rewrite the delegation cases of `tests/test_network_runtime.py` and add the engine and `ref-35` cases (design decisions 2 and 3).
+- [x] 2.3 Rewrite the delegation cases of `tests/test_network_runtime.py` and add the engine and `ref-35` cases (design decisions 2 and 3).
   - **Installation:**
     - put `setup/` on `sys.path` and `import engine`;
     - copy `setup/engine.py` and `*engine.INPUTS` beside the other names, in place of the hand-written list at lines 58-59;
@@ -59,10 +57,10 @@
     - a launch that times out is killed before the subtest fails.
   - **Verify:**
     - `grep -n "launcher/engine/" tests/test_network_runtime.py` finds no build input;
-    - `grep -n "PODMAN_SOCKET\|rejects CODEX_CONTAINER_PODMAN" tests/test_network_runtime.py` finds nothing;
+    - `grep -n "PODMAN_SOCKET\|rejects CODEX_CONTAINER_PODMAN" tests/test_network_runtime.py` finds only the check that the old socket override is ignored;
     - the module parses;
     - the `--network` entry of task 3.1 passes.
-- [ ] 2.4 Remove the delegation question from `tests/test_setup_wrapper.py` and `tests/test_setup_runtime.py`, and port the `ref-35` and `ref-34` setup fixes (design decision 2).
+- [x] 2.4 Remove the delegation question from `tests/test_setup_wrapper.py` and `tests/test_setup_runtime.py`, and port the `ref-35` and `ref-34` setup fixes (design decision 2).
   - **Both files:** the answers drop `('Delegate the host Podman API', 'no')`. `test_setup_wrapper.py` drops `'podman: False'` from the expected summary.
   - **`test_setup_runtime.py`:**
     - **CA case:** it copies `/etc/ssl/certs/ca-certificates.crt` to `self.base / 'ca-bundle.pem'` and answers with that path.
@@ -70,8 +68,9 @@
     - **Proxy shim:** it routes only `{{.Id}}` lookups of the egress image.
   - **Verify:**
     - `grep -n "Delegate the host Podman API" tests/test_setup_*.py` finds only the `assertNotIn` check;
-    - the `--setup` and `--setup-runtime` entries of task 3.1 pass, with equal image tags before and after `--setup-runtime`, apart from the rebuilt engine image.
-- [ ] 2.5 Update `tests/run-runtime.sh` (design decision 4).
+    - the `--setup` and `--setup-runtime` entries of task 3.1 pass, with equal image tags before and after `--setup-runtime`, apart from the rebuilt engine image;
+    - `tests.test_setup_wrapper` passes on the WSL host (task 3.1). No runner mode runs it, and here it stops at the protected-path check on drvfs.
+- [x] 2.5 Update `tests/run-runtime.sh` (design decision 4).
   - **Socket:** drop `CODEX_CONTAINER_PODMAN_SOCKET`. The socket comes from a Unix `CONTAINER_HOST`, else from `${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock`.
   - **`--shared` list:** add `test_engine`, `test_toolchains`, `test_windows_bootstrap` and `test_windows_enter`.
   - **Verify:**
@@ -79,7 +78,7 @@
     - a one-line check lists the shared `tests/test_*.py` of `SHARED_TESTS` in `tests/test_alignment.py`, without `test_setup.py`, and they equal the `--shared` list;
     - the dry run still prints `--shared` first;
     - the `shared` entry of task 3.1 runs those modules.
-- [ ] 2.6 Adapt `README.md`, `AGENTS.md` and `docs/setup.md` to the tag, with Codex's names (design decision 6).
+- [x] 2.6 Adapt `README.md`, `AGENTS.md` and `docs/setup.md` to the tag, with Codex's names (design decision 6).
   - **`README.md`:**
     - **Introduction:** sessions never receive the host Podman API.
     - **Launch service:** "Optional host Podman API access" becomes "Enable the launch service", with "Verify the launch service". The delegation socket selection goes.
@@ -99,15 +98,15 @@
     - `grep -n "^### Container tests" README.md` finds the section;
     - no `SANDBOX_CONTAINER_` or Claude name appears in the new text;
     - `git diff --check` passes.
-- [ ] 2.7 Check the main specs that the archive will produce (design, Risks).
+- [x] 2.7 Check the main specs that the archive will produce (design, Risks).
   - **How:** in a scratch copy of the checkout outside the repositories, run `openspec archive adopt-sandbox-ref-36 --yes`.
   - **Verify:**
     - `openspec/specs/container-podman-access/` is gone, and `session-container-engine` has 20 requirements;
     - `grep -rn "PODMAN_SOCKET\|PODMAN=1\|[Dd]elegat" openspec/specs` finds only the migration and refusal requirements and cgroup controller delegation;
-    - `openspec validate --specs --strict` adds no warning beyond those of `main` and "Fixed engine hardening exceptions".
+    - every warning that `openspec validate --specs --strict` adds to those of `main` is a requirement whose text, taken from the reference, is also over 500 characters there. On 2026-11-26 there were 8: "Fixed engine hardening exceptions", "Mode-specific image and guard preparation", "Persistent non-secret managed launch preferences", "Proxy process budget falls back to the process rlimit", and four `toolchain-library` requirements ("Relocatable toolchains from pinned sources", "Self-describing library for the agent", "Toolchain command on the host" and "Verified against the runtime image").
 
     Remove the scratch copy afterwards.
-- [ ] 2.8 Run the repository checks here, then commit the adoption on `adopt-sandbox-ref-36`, without merging.
+- [x] 2.8 Run the repository checks here, then commit the adoption on `adopt-sandbox-ref-36`, without merging.
   - **Unit checks:** `python3 -m unittest tests.test_reference_copy tests.test_alignment tests.test_engine tests.test_toolchains tests.test_image_pins tests.test_wrapper tests.test_setup_wrapper`, with `SANDBOX_TEST_TMPDIR` on executable storage when `/tmp` is `noexec`.
   - **Other checks:**
     - `python3 -c "import ast,sys; [ast.parse(open(p).read()) for p in sys.argv[1:]]"` on the changed test modules;
@@ -119,14 +118,15 @@
     - the runtime suites skip without an engine;
     - the validation reports only "Fixed engine hardening exceptions".
 
-## 3. Validation on WSL
+## 3. Development validation on WSL
 
-- [ ] 3.1 Have the operator run the adoption runner on WSL (design decision 7).
+- [x] 3.1 Have the operator run the adoption runner on WSL (design decision 7).
   - **Preparation:**
     - in the native clones, `sandbox-container` is on `main` and `codex-container` is on `adopt-sandbox-ref-36`;
     - `localhost/codex-cli:latest` and `localhost/codex-guard-toolchain:development` exist;
     - pull `docker.io/library/alpine@sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e`.
   - **Command:** from `sandbox-container`, run `bash tools/adoption-run.sh ../codex-container sandbox-ref-28 sandbox-ref-36`.
+  - **Codex's own module without a runner mode:** from `codex-container`, run `python3 -m unittest tests.test_setup_wrapper -v` on the host's Python, with `SANDBOX_TEST_TMPDIR` on a new private directory under the home, to its own full log. `--setup` runs only the shared `test_setup.py`, and the checklist does not name this module.
   - **Expected:**
     - the preflight passes;
     - the engine image label reads `SETUID,SETGID,SYS_CHROOT,CHOWN`;
@@ -135,33 +135,22 @@
       - the rlimit cases, `test_process_rlimit_counts_per_container`, `test_engine_process_rlimit_counts_per_container` and the proxy's, with "the engine does not use the process rlimit fallback";
       - the opt-in cases: the idle check of `--guard` and `test_real_documentation_mcp_through_the_production_proxy`;
     - both terminal cases run;
-    - the setup-runtime tags are equal.
+    - the setup-runtime tags are equal;
+    - `tests.test_setup_wrapper` passes.
 
   Analyse the archive in a new empty directory. A failure in shared code pauses the change for a fix in `sandbox-container` under a new tag. A Codex-only failure is fixed on the branch, and only its entries are rerun with `--only`, into a new archive.
-- [ ] 3.2 Have the operator run `.\tools\windows-validate.ps1 -Checkout <the Windows checkout of codex-container>` from `sandbox-container`, on Windows PowerShell 5.1, with the checkout on `adopt-sandbox-ref-36`.
-
-  Verify: no case fails, saved delegation is refused by the bootstrap, and "Session with library images" passes for Codex.
-- [ ] 3.3 Have the operator check real use on WSL (design decision 7).
-  - **Steps:**
-    - rerun `codex-container --container-setup` from the branch;
-    - add one image toolchain, for example `--container-toolchain add` with a catalog name or a local image;
-    - open one session.
-  - **Verify:**
-    - setup completes, builds the engine image and migrates any saved delegation;
-    - in the session, `CONTAINER_HOST=tcp://127.0.0.1:2375`;
-    - `podman info` reports rootless operation;
-    - `podman run --rm <the library image> true` succeeds.
 
 ## 4. Record, merge and parity
 
 - [ ] 4.1 Record the adoption and merge it.
   - **Record:** add the `sandbox-ref-36` adoption section to `docs/validation.md`, from the tool's template, with:
-    - every result of tasks 2.8 and 3.1 to 3.3;
+    - every result of tasks 2.8 and 3.1;
     - the engine label and the expected skips;
-    - the checks not run, with the reference's `ref-36` runs as their evidence: Rocky, the systemd and cgroup delegation cases, and the runner inside a session.
+    - the checks not run, with the reference's `ref-36` runs as their evidence: Rocky, the systemd and cgroup delegation cases, and the runner inside a session;
+    - the release risk (design decision 7): the Windows entry was not run against a real Podman machine. Its smoke test, after the release, is `.\tools\windows-validate.ps1 -Checkout <the Windows checkout>` from `sandbox-container`, on Windows PowerShell 5.1, with the updated installation. It should report no failed case, the refusal of saved delegation by the bootstrap, and a passing "Session with library images". A defect it finds gets its own change.
   - **Parity:**
     - Codex's implementation cell names the session container engine for image toolchains, with systemd in nested containers;
-    - its real enforcement cell gains the WSL and Windows `sandbox-ref-36` entries;
+    - its real enforcement cell gains the WSL `sandbox-ref-36` entry;
     - copy the reference row from `sandbox-container`.
   - **Merge:** commit with the tool's message and the co-author trailer, then merge into `main`.
   - **Verify:** `python3 -m unittest tests.test_reference_copy tests.test_alignment` passes on `main`.
@@ -176,5 +165,8 @@
   - it retires `container-podman-access`;
   - it creates `session-container-engine`;
   - it moves the launch-engine requirements to `container-session`.
+- A reference change in `sandbox-container` that aligns `docs/propagation.md` and the tool's checklist with the rule of development tests only: `launcher/windows/` maps to a release risk with its smoke test instead of a manual validation step.
 - A reference change in `sandbox-container`: when the runner offers `--shared`, the checklist also names the changed shared modules that the runner's list lacks. It should come before Antigravity, OpenCode and Pi adopt `sandbox-ref-36`, whose lists lack the same four modules.
 - Antigravity, OpenCode and Pi adopt `sandbox-ref-36` from `sandbox-ref-28`, with this change as their model.
+  Their `test_wrapper.py` probe case appends a second `qualification-input` answer to the synthetic control, which answers it itself since `sandbox-ref-34`. As in Codex, the case drops the append.
+- `tests/test_setup_wrapper.py` of Claude, Antigravity, OpenCode and Pi sets no `XDG_RUNTIME_DIR`. On a host with `podman.socket`, setup's default endpoint reaches the host's own socket through the fake podman, and `test_managed_rerun_reviews_saved_defaults_without_inheriting_launch_values` fails. Codex's fixture gives the module an empty private runtime directory; the others take the same fix in their next change or adoption.

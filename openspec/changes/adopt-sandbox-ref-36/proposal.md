@@ -72,9 +72,14 @@ the next tag would have to cross the same gap.
     toolchain and migration text, with Codex's names;
   - the delegation sections go;
   - the parity row in `docs/network-contract.md` is updated.
-- **Validation on one host,** WSL, with `tools/adoption-run.sh`. The tag
-  touches every component, so every runner mode runs. The Windows validation
-  script runs too, because `launcher/windows/` changed.
+- **Validation with development tests only,** on WSL: `tools/adoption-run.sh`
+  and Codex's `tests/test_setup_wrapper.py`. The tag touches every component,
+  so every runner mode runs. Installations and real use are not part of the
+  validation; a defect found there gets its own change.
+- **Release risk:** `launcher/windows/` changed, and development cannot
+  reproduce the Windows entry against a real Podman machine faithfully. The
+  record documents the risk and the smoke test to run after the release:
+  `tools/windows-validate.ps1` on Windows PowerShell 5.1.
 
 ## Capabilities
 

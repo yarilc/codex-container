@@ -4,10 +4,10 @@
 image filesystem is read-only, with writable workspace, Codex state, and
 temporary storage. A launch runs in one network mode: `provider` (the
 default; only the OpenAI hosts of one protected profile), `offline` or
-`unrestricted` (ordinary networking); see [Network modes](#network-modes). In `unrestricted` mode, set
-`CODEX_CONTAINER_PODMAN=1` to expose the host Podman socket and let Codex launch
-containers for tests and builds. The Podman command remains installed in every
-mode.
+`unrestricted` (ordinary networking); see [Network modes](#network-modes). Sessions never
+receive the host Podman API. For container-based tests and builds, add the
+images they need as toolchains: sessions then get a private container engine
+of their own ([Container tests](#container-tests)).
 
 ## Enable rootless Podman on the host
 
@@ -33,13 +33,12 @@ The first command must print `true`; the second must successfully start a
 container. Root inside that container is normal for rootless Podman.
 
 The wrapper always verifies the launch engine before image inspection, builds,
-or startup, including shell mode and sessions without delegated Podman access.
-It requires explicit Linux/rootless information and a recognized
-`Host.ServiceIsRemote` boolean. Failed queries and unverifiable results stop
-startup. Local Podman requires no API service. An explicit absolute Unix
-`CONTAINER_HOST` is supported for a service on the same host, including callers
-inside another container; that launch connection still requires its service
-when delegation to the Codex session is disabled. Named connections through
+or startup, including shell mode. It requires explicit Linux/rootless
+information and a recognized `Host.ServiceIsRemote` boolean. Failed queries and
+unverifiable results stop startup. Local Podman requires no API service. An
+explicit absolute Unix `CONTAINER_HOST` is supported for a service on the same
+host, including callers inside another container; launch verification then
+queries that service, which never reaches the session. Named connections through
 `CONTAINER_CONNECTION`, TCP/SSH endpoints (including the Podman machine
 connection that `podman.exe` uses), and implicit remote contexts are rejected.
 On Windows, the PowerShell entry runs the sandbox inside the Podman machine
@@ -52,27 +51,17 @@ Unix launch endpoints must contain an absolute socket path beyond `/`.
 rejected before any Podman query. Valid absolute paths are preserved as supplied.
 
 Verification preserves record boundaries: the launch response has one record,
-and Codex's delegated response has two (`true`, then the absolute host socket
-path, including any spaces). Either response can omit its final LF or end in
-exactly one LF. Additional blank or nonblank records and CR characters are
-rejected before image operations or startup. A failed query remains an error
-even if its output looks valid.
+which can omit its final LF or end in exactly one LF. Additional blank or
+nonblank records and CR characters are rejected before image operations or
+startup. A failed query remains an error even if its output looks valid.
 
-## Optional host Podman API access
+## Enable the launch service
 
-Default local sessions do not require an API service or socket. Skip this section
-and continue to Usage unless you want to enable `CODEX_CONTAINER_PODMAN=1`.
-Host Podman is still required to build and launch the Codex container.
-
-With that opt-in, socket selection uses the first nonempty choice:
-
-1. `CODEX_CONTAINER_PODMAN_SOCKET`, an absolute socket path.
-2. The path from an explicit Unix `CONTAINER_HOST` used by the caller.
-3. `${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock`.
-
-The override affects delegation only, not the launch engine. Empty overrides
-fall through. Socket selection and verification are skipped entirely when
-delegation is disabled. Choose **one** of the following service setup methods.
+Restricted networking (`provider` and `offline`) requires a same-host Unix
+launch service. An unrestricted local session needs no API service. Host Podman
+is always required to build and launch the Codex container. The launch service
+serves the wrapper only: no session ever receives a host Podman socket. Choose
+**one** of the following service setup methods.
 
 ### With a systemd user session
 
@@ -132,44 +121,27 @@ Repeat this setup after reboot because `/run` is temporary. Export the same
 session does not set it automatically. Run the service and wrapper without
 `sudo` so they use your rootless containers and configuration.
 
-### Verify the socket before enabling host access
+### Verify the launch service
 
 For either method, run these commands as the same user in the terminal where
 you will launch the wrapper:
 
 ```bash
-podman_socket="${CODEX_CONTAINER_PODMAN_SOCKET:-${CONTAINER_HOST#unix://}}"
+podman_socket="${CONTAINER_HOST#unix://}"
 podman_socket="${podman_socket:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock}"
 test -S "$podman_socket" && echo "Socket exists"
-podman --remote --url "unix://$podman_socket" info \
-    --format '{{.Host.Security.Rootless}} {{.Host.RemoteSocket.Path}}'
+podman --remote --url "unix://$podman_socket" info --format '{{.Host.Security.Rootless}}'
 ```
 
 Continue only if the socket exists and the API command succeeds and prints
-`true` followed by an absolute host-side socket path. A socket file alone does
-not prove that a service is listening
-or that its engine is rootless. With `CODEX_CONTAINER_PODMAN=1`, the wrapper
-automatically queries the selected socket explicitly before image inspection,
-building, or startup, in both Codex and shell modes, including `--container-build`.
-It rejects rootful services, failed queries, and empty or unexpected results.
+`true`. A socket file alone does not prove that a service is listening or that
+its engine is rootless.
 If the API command fails, check socket permissions, the systemd status, or
-the foreground service output above. If rootless is `false`, start the service
-as your normal non-root user. If the result is empty or unexpected, check
-that the service supports reporting `Host.Security.Rootless` as `true`.
-
-The client-visible socket is canonicalized and must be readable and writable.
-The wrapper mounts the service's reported `Host.RemoteSocket.Path`, which may
-be different when the caller itself runs in a container. Missing or relative
-host-side paths fail startup. The reported path is interpreted by the launch
-engine, not checked for existence in the caller's namespace. Both services
-must run on the same host, with workspace, state, and build context available
-at their host absolute paths; socket remapping does not translate those paths.
-For an explicit delegation override:
-
-```bash
-CODEX_CONTAINER_PODMAN=1 \
-CODEX_CONTAINER_PODMAN_SOCKET="/absolute/path/to/podman.sock" ./codex-container.sh
-```
+the foreground service output above. If it prints `false` or another
+unexpected result, verify that the service was started as the intended
+non-root user, without `sudo`, and repeat the rootless service setup above.
+Workspace, state and build context must be available to the service at their
+host absolute paths.
 
 See also the official
 [Podman API service documentation](https://docs.podman.io/en/latest/markdown/podman-system-service.1.html).
@@ -186,7 +158,7 @@ bash ./codex-container.sh --container-setup
 ```
 
 Setup asks for the network mode (default `provider`), authentication method,
-state, Podman endpoint, delegation, YOLO, worktree scope, budgets, lifetime and
+state, Podman endpoint, YOLO, worktree scope, budgets, lifetime and
 CA trust. In provider mode it shows the residual-exfiltration notice and needs
 your acknowledgement. It then reviews the choices and the image maintenance it
 will perform, prepares the images and guard, installs a protected release in
@@ -250,24 +222,7 @@ and newly added files. Future local `COPY` or `ADD` inputs must be deliberately
 included in `.containerignore`. This policy filters builds; it does not
 restrict runtime workspace mounts.
 
-To allow access to the host Podman service, complete the optional socket setup
-and verification, then use:
-
-```bash
-CODEX_CONTAINER_NETWORK=unrestricted CODEX_CONTAINER_PODMAN=1 ./codex-container.sh
-CODEX_CONTAINER_NETWORK=unrestricted CODEX_CONTAINER_PODMAN=1 ./codex-container.sh --container-shell
-```
-
-Delegation is available only with explicit `unrestricted` networking: in
-`offline` and `provider` the wrapper rejects `CODEX_CONTAINER_PODMAN=1` before
-image or resource operations, because the host API bypasses egress
-enforcement. Only the exact value `1` enables this integration. Unset, empty,
-and all other values (including `true`) disable it: the wrapper does not
-validate or mount the API socket and removes `CONTAINER_HOST` from the session
-environment.
-Existing users who launch child containers through the host service must now
-set `CODEX_CONTAINER_PODMAN=1`. Both modes use the same image, and
-`CODEX_CONTAINER_IMAGE` continues to override its name.
+`CODEX_CONTAINER_IMAGE` overrides the image name.
 
 OpenSpec is installed globally in the image. Initialize it once in each
 workspace where you want to use spec-driven development:
@@ -356,8 +311,8 @@ provider mode another profile's credential) are skipped with a notice.
 `0`, `false`, or `no` to disable it. Words are case-insensitive, so `TrUe`
 and `YeS` enable it and `FaLsE` and `nO` disable it. Other values, including
 words surrounded by spaces, stop startup with an error. Shell mode validates
-the value but does not add Codex arguments. This parsing does not change the
-exact `CODEX_CONTAINER_PODMAN=1` opt-in or explicit native CLI arguments.
+the value but does not add Codex arguments. This parsing does not change
+explicit native CLI arguments.
 Use it only when the container and its mounts are considered an isolated,
 trusted environment.
 The image filesystem remains read-only even with `CODEX_YOLO=1`.
@@ -369,19 +324,128 @@ Installing Bubblewrap or passing a basic namespace probe does not establish
 that an actual CLI sandboxed operation succeeds. Check the operation and its
 output independently; no Antigravity-specific seccomp workaround is applied.
 
-| `CODEX_YOLO` | `CODEX_CONTAINER_PODMAN` | Session behavior |
-| --- | --- | --- |
-| Disabled | Disabled | Native CLI settings; no delegated socket |
-| Enabled | Disabled | `--yolo`; no delegated socket |
-| Disabled | Exactly `1` | Native CLI settings; host service access |
-| Enabled | Exactly `1` | `--yolo` and host service access |
+| `CODEX_YOLO` | Session behavior |
+| --- | --- |
+| Disabled | Native CLI settings |
+| Enabled | `--yolo` |
 
 ```bash
 ./codex-container.sh
 CODEX_YOLO=1 ./codex-container.sh
-CODEX_CONTAINER_PODMAN=1 ./codex-container.sh
-CODEX_YOLO=1 CODEX_CONTAINER_PODMAN=1 ./codex-container.sh
 ```
+
+### Container tests
+
+Sessions never receive the host Podman API. When the toolchain library holds at
+least one image toolchain, every session instead gets a private, rootless
+Podman engine of its own, in every network mode. The engine shares the
+session's network namespace, so its containers have the session's egress: an
+offline session's containers reach nothing outside. The session reaches it at
+`CONTAINER_HOST=tcp://127.0.0.1:2375`, also given as `DOCKER_HOST` for
+Docker-API clients such as Testcontainers. The engine runs the library's images
+offline by their pinned references, mounts only the workspace (at the same
+path) and the library's read-only image store, holds no secrets, and is removed
+with its storage when the session ends. Without images in the library, or with
+`CODEX_CONTAINER_TOOLCHAINS=0`, there is no engine and `CONTAINER_HOST` and
+`DOCKER_HOST` are absent from the session, including image or engine defaults.
+
+```bash
+./codex-container.sh --container-toolchain add ~/recipes/postgres16.json   # see Images
+./codex-container.sh --container-shell -c 'podman run --rm --network=none docker.io/library/postgres@sha256:<digest> postgres --version'
+```
+
+- **Images:** add them as toolchains ([Images](#images)). In offline and
+  provider sessions the engine pulls nothing; in unrestricted sessions it can
+  also pull, and pulled or built images stay in the session's storage. An image
+  added during a session is usable at once; the first image needs a new
+  session, because a session without library images starts without an engine.
+- **Workspace:** a container that bind-mounts a path inside the workspace sees
+  the workspace files, and files its root creates there belong to you. Any
+  other path a nested container mounts is the engine's own file system, never
+  the host's.
+- **Isolation:** each nested container has its own process view and host name
+  (its container ID). Two sessions have separate engines and never see each
+  other's containers.
+- **Lifetime:** the launcher starts the engine before the application, waits
+  until it answers as a rootless engine, and removes it with its storage when
+  the session ends, also after a signal. A later launch removes the engine of a
+  launch that was killed.
+- **Budgets:** the engine gets the session's memory, CPU and process budgets,
+  checked like the agent's; together the session can therefore use twice the
+  agent's budget, and the launch says so. On the process rlimit fallback the
+  engine's first process sets the limit before anything else, and the launch
+  reads it from that process before the session starts; the engine and
+  everything it runs share that one limit. Explicit `--memory` or
+  `--pids-limit` limits on nested containers apply for every cgroup controller
+  the engine has (see **Systemd containers and nested limits** below); a limit
+  that needs a controller the engine lacks fails, and the container does not
+  start.
+- **Hardening exceptions:** the engine container is the one container that
+  relaxes the standard policy, only as nested rootless containers and image
+  operations need: the `SETUID` and `SETGID` capabilities for the
+  user-namespace helpers and `SYS_CHROOT` for layer extraction and builds
+  (with no-new-privileges kept on), the FUSE and TUN devices, an unmasked procfs,
+  SELinux labelling disabled, a seccomp profile derived from the host's
+  default that also allows `sethostname` and `setdomainname`, and a startup
+  step that delegates the engine's own cgroup subtree. That step is the
+  engine's first process: it starts as the root of the engine's user namespace
+  (never you) with the `CHOWN` capability as well, hands the subtree to the
+  engine user, and then runs everything else as that user. Afterwards no
+  engine process runs as root, and `CHOWN` stays only in the bounding set,
+  where no-new-privileges keeps it unreachable. The engine user is unprivileged
+  and mapped to you (`--userns=keep-id:uid=1000,gid=1000`), which needs 65535
+  of your subordinate IDs in one contiguous range. A tool that needs more
+  privilege is unsupported. The engine image declares these four capabilities
+  (`SETUID`, `SETGID`, `SYS_CHROOT` and `CHOWN`) in its
+  `io.containers.capabilities` label, so Podman starts the engine without a
+  capability error. An engine image built before `sandbox-ref-36` keeps its
+  base's label, and Podman logs `Capabilities requested by user or image are
+  not allowed by default` at each start. The message is harmless, because
+  Podman keeps the engine's capabilities. Rerun
+  `codex-container --container-setup` to rebuild the image.
+- **Systemd containers and nested limits:** on an eligible engine, nested
+  containers get cgroups of their own, so an image that starts systemd runs it
+  as PID 1, for example to test Ansible roles that manage services:
+
+  ```bash
+  # an image toolchain whose image starts /sbin/init, such as a Rocky Linux 9 init image
+  podman run --detach --name target --systemd=always docker.io/rockylinux/rockylinux@sha256:<digest>
+  podman exec target timeout 120 sh -c 'until systemctl is-system-running | grep -qE "^(running|degraded)$"; do sleep 1; done'
+  podman exec target systemd-run --unit=probe --property=Type=oneshot /bin/true
+  ```
+
+  The second command waits until boot completes (`running` or `degraded`).
+  `systemctl is-system-running --wait` does the same only when the image
+  has D-Bus; init images without it answer `Failed to connect to bus`.
+
+  An engine is eligible when its cgroup namespace is private and its cgroup
+  v2 root is mounted read-write with `nsdelegate` and belongs to the root of
+  its user namespace. This holds for native Linux with the `systemd` cgroup
+  manager and for the Windows Podman machine (`cgroupfs`); no host change is
+  needed. Explicit nested limits apply for each controller the engine has:
+  `memory` and `pids` where the rootless engine delegates them (native Linux
+  with the `systemd` manager); the Windows Podman machine delegates none, so
+  there they fail, and systemd's resource-control unit settings (such as
+  `MemoryMax=` or `TasksMax=`) have no effect. The engine's own limit files,
+  and so the session budgets, stay unwritable from the engine and from nested
+  containers. When an engine is not eligible, for example on a host with
+  cgroup v1, the launch says `systemd containers and explicit limits for nested
+  containers are unavailable` with the reason, and the session starts without
+  them. Systemd containers and the delegation are untested with SELinux
+  enforcing or an active AppArmor profile.
+- **Host `/sys` in the session:** the session joins the engine's network
+  namespace, and a rootless container that joins another namespace cannot
+  mount a sysfs of its own: Podman bind-mounts the host's `/sys` read-only
+  instead. A session with an engine therefore sees the host's network
+  interfaces in `/sys/class/net` (names, MAC addresses, link state and
+  counters). Its network namespace still has only loopback, as `/proc/net/dev`
+  shows.
+
+Migration: host Podman delegation (`CODEX_CONTAINER_PODMAN=1`, with
+`CODEX_CONTAINER_PODMAN_SOCKET`) was removed. The exact value `1` now stops
+every launch with this guidance, other values are ignored, and setup drops a
+saved delegation choice. Add the images your tests need as toolchains (see
+[Toolchains](#toolchains)); the next session has its engine.
 
 ### Using Git worktrees
 
@@ -487,12 +551,15 @@ import the CAs that Windows trusts
 
 ## Network modes
 
-| `CODEX_CONTAINER_NETWORK` | Agent network access | Host Podman delegation |
-| --- | --- | --- |
-| unset or empty | `provider`; without setup's saved provider settings the launch stops with setup guidance | Rejected |
-| `offline` | Own loopback, pipes and connected socket pairs only | Rejected |
-| `provider` | As offline, plus one preconnected channel to an exact-destination proxy | Rejected |
-| `unrestricted` | Ordinary runtime networking | Exact opt-in allowed |
+| `CODEX_CONTAINER_NETWORK` | Agent network access |
+| --- | --- |
+| unset or empty | `provider`; without setup's saved provider settings the launch stops with setup guidance |
+| `offline` | Own loopback, pipes and connected socket pairs only |
+| `provider` | As offline, plus one preconnected channel to an exact-destination proxy |
+| `unrestricted` | Ordinary runtime networking |
+
+A session container engine ([Container tests](#container-tests)) shares the
+session's network namespace, so its containers have the same access.
 
 First-run setup proposes `provider` and saves the selected mode for its managed
 launcher. Operators can explicitly choose `offline` for prepared restricted
@@ -501,7 +568,7 @@ also need `CODEX_CONTAINER_MAINTENANCE=1`. Restricted failures never fall back
 to unrestricted networking. Offline sessions cannot reach the OpenAI API.
 
 The restricted implementation is shared with `sandbox-container` and copied
-unchanged from its tag `sandbox-ref-28`; see
+unchanged from its tag `sandbox-ref-36`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md). Every agent container, in every mode,
 drops all capabilities, enables no-new-privileges and receives the memory, CPU
@@ -793,9 +860,11 @@ Windows variable. Path values are distribution paths, such as
 
 Limits on Windows:
 
-- No Podman delegation: `CODEX_CONTAINER_PODMAN=1` is refused, and a release
-  whose setup saved delegation, for example from a Linux shell in the machine,
-  asks to rerun setup from Windows.
+- No host Podman delegation, as on Linux: `CODEX_CONTAINER_PODMAN=1` is
+  refused with the migration guidance, and a release whose setup saved
+  delegation asks to rerun setup from Windows. Sessions with image toolchains
+  get their private container engine in the machine
+  ([Container tests](#container-tests)).
 - PowerShell pipeline input, such as
   `'x' | .\codex-container.ps1 --container-shell -c cat`, is refused, because
   PowerShell alters it. Redirect a file from `cmd.exe` instead:
@@ -851,6 +920,33 @@ setup proposes, the machine's system bundle (see
 [Host CA trust](#host-ca-trust)): setup passes it to the image builds and saves
 it for sessions. Rerun setup after the machine is recreated, and enable the
 import again on the new machine.
+
+### Toolchains on Windows
+
+The [toolchain](#toolchains) commands run from PowerShell like the other
+options, from any directory outside the checkout:
+
+```powershell
+codex-container --container-toolchain add java21
+codex-container --container-toolchain add C:\Users\me\recipes\x.json
+codex-container --container-toolchain list
+```
+
+- **Location:** the library lives inside the Podman machine's distribution, in
+  `~/.local/share/sandbox-toolchains` of the machine user, or in
+  `CODEX_CONTAINER_TOOLCHAINS_DIR` (a distribution path). Every wrapper that
+  runs in the machine shares it. Recreating the machine removes it: after the
+  new setup, add the toolchains again.
+- **Windows paths:** a recipe path or a local archive path in a recipe written
+  as a Windows drive path (`C:\...` or `C:/...`) is translated to its drive
+  mount in the machine. Network shares, paths inside a WSL distribution and
+  drives that the distribution does not mount are refused. Keep your recipes
+  outside project folders (see [Managing the library](#managing-the-library)).
+- **Network:** pulls and downloads run inside the machine. On a network that
+  re-signs TLS, they trust the CA that `podman machine set --import-native-ca`
+  adds to the machine (see [Trusting a host CA on Windows](#trusting-a-host-ca-on-windows)).
+  The entry forwards no Windows proxy variable, so `add` downloads without an
+  explicit HTTP proxy; pulls follow the machine's Podman configuration.
 
 ### Install as a command
 
@@ -919,8 +1015,7 @@ filesystem the session user cannot write.
 artifacts that must run belong in the workspace. `/tmp`, `/var/tmp` and the home
 keep mode 1777; `/run` does not. These are per-mount capacities, not reserved memory or a total
 container memory limit. Writes can fail when a bounded mount fills; workspace
-and persistent state remain separate host storage. In delegated sessions, nested
-Podman gets its own private tmpfs storage.
+and persistent state remain separate host storage.
 
 Podman 5 with crun 1.27 cannot attach a terminal when `/dev` is read-only, so
 the wrapper keeps automatic read-only tmpfs provisioning. The engine provides
@@ -939,20 +1034,17 @@ the container. With `--container-git-worktree`, its immediate physical parent
 is mounted at that same absolute path instead; the working directory and
 container naming still use the original launch directory. Preserving absolute
 paths is required because bind mounts for child containers are resolved by
-the host Podman service. Persistent configuration is stored in
+the session's container engine, which mounts the workspace at the same path. Persistent configuration is stored in
 `~/.codex` (or the host `CODEX_HOME` override), mounted at
 `/codex-home/.codex`, and also selected through the container's `CODEX_HOME`.
 
-When enabled, the socket gives Codex control over containers and volumes
-available to the host Podman user. Without the opt-in, the client is still
-installed, but the wrapper supplies no connection to that service. With the
-socket enabled, the agent can request new host bind mounts beyond the workspace
-using that service user's authority. Rootless delegation cannot enforce
-project-only filesystem access. This controls the wrapper's socket integration;
-it does not block independently
-configured endpoints or sockets exposed through workspace files. The wrapper
-does not use `--privileged` and does not install SSH clients or remote
-repository configuration.
+No session receives a host Podman socket. A session's private container engine
+mounts only the workspace and the library's read-only image store, so its
+containers stay inside the project-only filesystem boundary and the session's
+network boundary ([Container tests](#container-tests)). The wrapper does not
+block independently configured endpoints or sockets exposed through workspace
+files. It does not use `--privileged` and does not install SSH clients or
+remote repository configuration.
 
 With `--container-git-worktree`, the selected parent is exposed read/write with
 all files beneath it. Use the flag from a directory whose parent you intend to
@@ -962,13 +1054,14 @@ root and the read-only image policy would not make such host files immutable.
 
 ### Session hardening, budgets and lifetime
 
-Every Codex and shell session, with or without Podman delegation and YOLO, runs
-with `--cap-drop=all` and `--security-opt=no-new-privileges`. The container has
-no capabilities and cannot gain privileges through set-user-ID programs. Codex's
-own Linux command sandbox, Bubblewrap, Git, OpenSpec and the delegated Podman
-client work under these settings. The wrapper never adds capabilities back to
-work around a tool; such a limitation is documented in `docs/validation.md`.
-Delegation still grants host engine authority beyond these limits.
+Every Codex and shell session, with or without YOLO and a container engine,
+runs with `--cap-drop=all` and `--security-opt=no-new-privileges`. The
+container has no capabilities and cannot gain privileges through set-user-ID
+programs. Codex's own Linux command sandbox, Bubblewrap, Git, OpenSpec and the
+Podman client of the session's container engine work under these settings. The
+wrapper never adds capabilities back to work around a tool; such a limitation
+is documented in `docs/validation.md`. The engine container has its own fixed
+exceptions ([Container tests](#container-tests)).
 
 Every session has explicit resource budgets:
 
@@ -1001,20 +1094,37 @@ cgroup manager, which applies no cgroup limits` and the matching CPU line, and
 the process budget uses the fallback below.
 
 The process budget has a fallback. Without the `pids` controller, the agent
-container gets a soft and hard process rlimit (`--ulimit nproc=N:N`) at the
+container's first process sets its soft and hard process rlimit to the
 selected budget, and the notice reads `agent process budget enforced through the
-process rlimit (512 tasks of the session user, threads included)`. The limit is
-per session: Linux 5.14 and later count it per user namespace, and every
-container has its own. The session cannot raise it, because it has no
-capabilities. Container startup uses a few of these tasks, so slightly fewer
-than `N` processes are available. The fallback applies only when the engine
-reports kernel 5.14 or later (`podman info --format '{{.Host.Kernel}}'`). Older
-or unrecognized kernels may count every process of your user, so the process
-budget then stays unenforced, and the notice names the reason. The memory and
-CPU budgets have no fallback. The provider proxy's process budget uses the same
-fallback. Which mechanism enforces each process budget is part of the restricted
-qualification identity, and each launch checks the configured rlimit as it
-checks the cgroup limits.
+process rlimit (512 tasks of the session user, threads included)`:
+- **Where it is set.** The container starts with a fixed `/bin/sh` step,
+  `{ ulimit -u N 2>/dev/null || ulimit -p N; } && exec <program>`, before Codex
+  or, in restricted modes, the guard runs (dash names the limit `-p`). If the
+  limit cannot be set, the container stops before anything else runs, and each
+  launch checks that the created container starts with this step.
+- **Per session.** Linux 5.14 and later count the limit per user namespace, and
+  the step sets it inside the container's own. The wrapper never uses
+  `--ulimit nproc`: the engine applies that limit before it creates the
+  container's user namespace, and the kernel then checks every fork against
+  the processes of all your containers together (see `docs/validation.md`).
+- **Not raisable.** The session cannot raise the limit, because it has no
+  capabilities. Its own processes count against it, so slightly fewer than `N`
+  processes are left for commands.
+- **Exceptions.** A process that host tools start in the container with
+  `podman exec` gets the engine's default limits instead. Only the launcher's
+  checks and the validation script do that; a session has no engine access to
+  its own container.
+- **The machine as a whole.** Each session, proxy and engine is bounded
+  separately; together they are bounded only by your user's own process
+  limit.
+
+The fallback applies only when the engine reports kernel 5.14 or later
+(`podman info --format '{{.Host.Kernel}}'`). Older or unrecognized kernels may
+count every process of your user, so the process budget then stays unenforced,
+and the notice names the reason. The memory and CPU budgets have no fallback.
+The provider proxy's process budget uses the same fallback, set by the proxy's
+first process. Which mechanism enforces each process budget is part of the
+restricted qualification identity.
 
 Risk: without the memory or process budget, a session can exhaust host memory
 or processes for your user; without a CPU budget it can saturate every CPU.
@@ -1086,39 +1196,75 @@ The operator runs these commands on the host; `--container-toolchain` must be
 the first argument:
 
 ```bash
-codex --container-toolchain add java21.json   # install or replace from a recipe
-codex --container-toolchain list              # name, version, default, size, verified base
+codex --container-toolchain add java21            # install or replace a catalog recipe
+codex --container-toolchain add ~/recipes/x.json  # install or replace an operator recipe
+codex --container-toolchain list                  # installed toolchains, then the catalog
 codex --container-toolchain remove java21
-codex --container-toolchain verify [java21]   # rerun the checks on the current runtime image
+codex --container-toolchain verify [java21]       # rerun the checks on the current runtime image
 ```
 
-- **Sources:** a toolchain is a relocatable directory tree, taken either from
-  a path inside an OCI image referenced by `@sha256:` digest, or from a local
-  archive with its SHA-256. The command never downloads archives.
-- **Pulls:** pulling a missing image requires exact
-  `CODEX_CONTAINER_MAINTENANCE=1`. Like image builds, the pull happens on the
-  host, outside runtime filtering.
-- **Extraction:** it rejects absolute paths, `..`, device nodes and links
-  that leave the toolchain, and clears setuid and setgid bits.
+An argument without `/` that does not end in `.json` names a recipe of the
+release's catalog (see [Recipes](#recipes)); any other argument is a recipe
+file. `list` shows the name, version, default flag, size, requirements and
+verified base of each installed toolchain, then the catalog recipes that are
+not installed.
+
+- **Sources:** a toolchain is a relocatable directory tree, assembled from one
+  or more sources: a path inside an OCI image referenced by `@sha256:` digest,
+  an HTTPS archive URL with its SHA-256, or a local archive with its SHA-256.
+  A toolchain can also, or only, provide container images for the session
+  container engine (see [Images](#images)); `list` shows them with the others,
+  and `remove` deletes images no other toolchain lists, once no session engine
+  runs.
+- **Operator recipes:** keep them outside project directories, for example in
+  `~/recipes`. A session can write its workspace and state directories, so an
+  agent could have written a recipe found there: `add` refuses a recipe file
+  inside the directory it runs from (its parent, when setup saved the worktree
+  scope) or inside a state directory, before fetching anything. It cannot
+  recognize the directories of other projects. Catalog names are not affected,
+  and neither are the local archives that a recipe pins by SHA-256.
+- **Fetching:** `add` fetches what the recipe names by itself and prints each
+  image and URL first. It pulls a missing image and downloads archive URLs
+  without `CODEX_CONTAINER_MAINTENANCE`, because the content is fixed by its
+  digest or SHA-256 and no code runs while it is fetched and extracted.
+  Downloads use HTTPS only and follow redirects only to HTTPS. They trust the
+  host CA bundle that setup saved when host CA trust is enabled, and the system
+  trust otherwise, and they use the host's proxy variables. Like image builds,
+  pulls and downloads happen on the host, outside runtime filtering. `add`
+  never builds an image; image builds still require maintenance.
+- **Extraction:** every archive is checked against its SHA-256 before anything
+  is extracted, and is extracted from a private copy in the library, so a local
+  archive changed afterwards cannot reach the toolchain. Extraction rejects
+  absolute paths, `..`, device nodes and links that leave the toolchain, and
+  clears setuid and setgid bits. A file that two sources provide fails the
+  command.
 - **Atomic changes:** changes take a library lock and replace directories
   atomically.
 - **Check:** before accepting a toolchain, `add` runs the recipe's `check`
   command in the Codex runtime image, without network and with the session's
   identity and hardening. A toolchain that needs a newer C library than the
   image's glibc fails here. The manifest records the base image from the
-  installed `Containerfile`. If that base changes, the toolchain stays visible
-  but loses its default environment until `verify` succeeds, and the launcher
-  prints one warning naming it. All five wrappers build from the same base, so
-  a toolchain verified by another wrapper keeps its default environment here.
+  installed `Containerfile`.
+- **After an update:** when setup selects a new release, it reruns the check of
+  every installed toolchain verified on another base, records the new base
+  when the check passes, and prints the result for each. A failed check does
+  not fail setup: that toolchain stays visible but loses its default
+  environment until `verify` succeeds, and the launcher prints one warning
+  naming it. All five wrappers build from the same base, so a toolchain
+  verified by another wrapper keeps its default environment here.
 
 ### Recipes
 
-A recipe is a JSON file that the operator keeps and reviews:
+The release contains a catalog of reviewed recipes in
+`setup/toolchain-catalog/`, shared by every wrapper: `add <name>` installs one
+with nothing else to prepare. An operator recipe is a JSON file that the
+operator keeps and reviews, and gives to `add` by its path:
 
 | Key | Meaning |
 | --- | --- |
-| `schema`, `name`, `version` | `1`; `[a-z0-9][a-z0-9._-]*`; free version text |
-| `source` | `{"image": "<ref>@sha256:<digest>", "path": "/abs/path"}` or `{"archive": "/abs/file.tar.xz", "sha256": "<hex>", "strip_components": 1}` |
+| `schema`, `name`, `version` | `2`; `[a-z0-9][a-z0-9._-]*`; free version text |
+| `sources` | 1 to 16 sources, extracted in order into one toolchain (see below); optional with `images` |
+| `images` | 1 to 16 container images for the session container engine (see [Images](#images)) |
 | `path` | directories relative to the toolchain, added to `PATH` (default `["bin"]`) |
 | `env` | variables: `{"toolchain": "<relative path>"}` or `{"value": "<literal>"}` |
 | `requires` | other toolchains whose environment is loaded first |
@@ -1126,6 +1272,23 @@ A recipe is a JSON file that the operator keeps and reviews:
 | `check` | command run in the runtime image before the toolchain is accepted |
 | `default` | `true` adds the toolchain to new sessions' environment |
 
+Each source is one of:
+
+| Source | Keys |
+| --- | --- |
+| Image | `{"image": "<ref>@sha256:<digest>", "path": "/abs/dir", "target": "rel/dir"}` |
+| Archive URL | `{"url": "https://...", "sha256": "<hex>", "path": "member/dir", "target": "rel/dir"}` |
+| Local archive | `{"archive": "/abs/file.tar.xz", "sha256": "<hex>", "path": "member/dir", "target": "rel/dir"}` |
+
+- **Placement:** an image source copies the directory `path` of the image. For
+  an archive, `path` selects one directory inside it, or `strip_components`
+  drops that many leading directories instead. The result goes to `target`
+  (default: the toolchain root). Directories of several sources merge; a file
+  that two sources provide fails `add`. An archive that several sources use is
+  fetched once.
+- **Schema 1:** recipes with `"schema": 1` and one `source` object (an image or
+  a local archive, with `strip_components`) stay valid.
+- **Catalog recipes** use only images and archive URLs, never local files.
 - **Protected variables:** recipes cannot set `PATH`, `HOME`, loader, proxy
   or CA variables, any `XDG_` variable (a wrapper may place its state with
   them) or `DBUS_SESSION_BUS_ADDRESS` (no session has a bus). These rules are
@@ -1151,12 +1314,60 @@ A recipe is a JSON file that the operator keeps and reviews:
   access that provider and offline modes do not grant. Provide dependencies in
   the workspace, or use an unrestricted session.
 
-The verified example recipes (Temurin 21, Maven 3.9, Go, Node.js 24,
-Python 3.13 and Rust) are kept in the reference repository, in
-[`sandbox-container/docs/toolchains/`](https://github.com/yarilc/sandbox-container/tree/main/docs/toolchains),
-with their versions, digests, checksums and usage notes in its
-[README "Toolchains" section](https://github.com/yarilc/sandbox-container#toolchains).
-They do not depend on the agent.
+#### Images
+
+A recipe can also list container images. Sessions started while the library
+holds at least one image get a private container engine that runs them
+([Container tests](#container-tests)). Each image is one of:
+
+| Image | Form |
+| --- | --- |
+| Registry image | `"<ref>@sha256:<digest>"`; a reference without a digest is refused |
+| Local image | `{"local": "sha256:<full image ID>", "name": "localhost/<name>[:tag]"}` |
+
+```json
+{"schema": 2, "name": "postgres16", "version": "16.4", "default": false,
+ "images": ["docker.io/library/postgres@sha256:<digest>"],
+ "check": ["podman", "run", "--rm", "--network=none", "docker.io/library/postgres@sha256:<digest>", "postgres", "--version"]}
+```
+
+- **Store:** `add` keeps the images in the library's image store, `.images`,
+  through a helper container of the engine image. Registry images are pulled on
+  the host, with host CA trust when setup enabled it, and keep both their index
+  and platform digests. A local image is copied from the host engine by its
+  full ID (`podman image inspect --format '{{.Id}}' <image>`) and named as the
+  recipe says; `add` fails if the host engine has no image with that ID. An image
+  several toolchains list is stored once.
+- **Image-only recipes** have no `sources`, `path` or `env`, and `default` must
+  be `false`; `toolchains.md` lists their images with a `podman run` example.
+- **Check:** for a recipe with images, `check` runs in the runtime image against
+  a temporary engine like a session's, without network, so a check that runs
+  the image proves it runs offline.
+- **Live updates:** an image added while sessions run is usable by their engines
+  at once. Removing an image, or replacing a toolchain with one that drops an
+  image, waits until no session engine runs: the command fails and names the
+  running sessions.
+- **Catalog recipes** never list local images.
+- **Cleanup:** image layers in `.images` can belong to your subordinate IDs, as in
+  any rootless Podman storage. Remove image toolchains with `remove`, which
+  deletes their layers through the helper; deleting the directory directly needs
+  `podman unshare rm -rf`.
+
+The catalog recipes pin the versions, digests and checksums below; the
+recipe files hold the full values. See [the validation
+record](docs/validation.md#toolchain-library-2026-11-13) for the checks.
+
+| Name | Version | Source | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `java21` | Temurin 21.0.13 | image `eclipse-temurin@sha256:0a3f3298…`, `/opt/java/openjdk` | yes | `JAVA_HOME` |
+| `maven3.9` | 3.9.16 | image `maven@sha256:99e61abc…`, `/usr/share/maven` | yes | requires `java21`; local repository in `/tmp/m2`; harmless jansi warning |
+| `go` | 1.27.4 | image `golang@sha256:4fa7c968…`, `/usr/local/go` | yes | `GOTOOLCHAIN=local`; caches in `/tmp`; `go test` needs `GOTMPDIR` in the workspace |
+| `node24` | 24.22.3 | archive `node-v24.22.3-linux-x64.tar.xz` from `nodejs.org` | no | the image's Node.js 22 stays first |
+| `python3.13` | 3.13.18 | python-build-standalone `20261110` `install_only` archive from GitHub | no | the image's `python3` stays first; virtual environments in the workspace |
+| `rust` | 1.100.0 | `rustc`, `cargo` and `rust-std` (host and `x86_64-unknown-linux-musl`) archives from `static.rust-lang.org` | yes | target `x86_64-unknown-linux-musl` linked by `rust-lld`; crates with build scripts or procedural macros fail |
+
+The runtime image has no C linker, so the `rust` recipe uses the musl target,
+whose startup files ship with Rust, and links with `rust-lld`.
 
 ### Telling the agent
 
@@ -1269,8 +1480,11 @@ CODEX_RUNTIME_TESTS=1 python3 -B -m unittest discover -s tests -p test_runtime.p
 bash tests/run-runtime.sh
 ```
 
-The runtime suite requires a reachable delegation socket and supports the same
-`CODEX_CONTAINER_PODMAN_SOCKET`, Unix `CONTAINER_HOST`, and XDG/UID defaults.
+The runtime suite reaches the launch service through a Unix `CONTAINER_HOST`,
+else through the runtime directory's socket (`XDG_RUNTIME_DIR` or
+`/run/user/<uid>`). Its session engine cases need the engine image
+(`localhost/codex-cli-engine:latest`) and the pinned alpine sample image in that
+engine; without them they skip, asking to prepare the image.
 `CODEX_CONTAINER_IMAGE` selects the image for both runners. Explicitly enabled
 tests fail if prerequisites are missing; without opt-in they are skipped.
 Projects and state are disposable, and the suite starts only shell sessions
@@ -1282,9 +1496,10 @@ retain their host absolute paths when using a containerized caller.
 
 Checks cover real mount boundaries, identity, persistent state, all ephemeral
 locations, tmpfs capacities and `noexec`, concurrent naming, signals and owned
-cleanup, exit 125, build-context exclusion, linked Git worktrees, child binds,
+cleanup, exit 125, build-context exclusion, linked Git worktrees,
 a caller with a remapped Unix service socket, zero capabilities and
 no-new-privileges, effective cgroup v2 budgets and process-limit enforcement,
-Codex's own sandbox, Bubblewrap and delegated children without capabilities,
-the lifetime limit and the refused home workspace. Exact results and unavailable checks are recorded in
+Codex's own sandbox and Bubblewrap without capabilities, the refusal of the
+removed delegation opt-in, the session container engine, the lifetime limit
+and the refused home workspace. Exact results and unavailable checks are recorded in
 [docs/validation.md](docs/validation.md).

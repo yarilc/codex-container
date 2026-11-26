@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -52,11 +51,6 @@ class WrapperTests(unittest.TestCase):
         self.env = {'PATH': str(self.bin) + ':' + os.environ['PATH'], 'HOME': str(self.base / 'host-home'),
                     'CODEX_CONTAINER_NETWORK': 'unrestricted', 'CODEX_CONTAINER_MAINTENANCE': '1',
                     'FAKE_LABEL_HASH': build_inputs_hash(ROOT), 'FAKE_LOG': str(self.log)}
-        self.socket = socket.socket(socket.AF_UNIX)
-        self.socket_path = self.base / 'podman.sock'
-        self.socket.bind(str(self.socket_path))
-        self.addCleanup(self.socket.close)
-        self.env['CODEX_CONTAINER_PODMAN_SOCKET'] = str(self.socket_path)
 
     def run_wrapper(self, *args, wrapper=WRAPPER, **env):
         self.log.unlink(missing_ok=True)
@@ -88,18 +82,19 @@ class WrapperTests(unittest.TestCase):
                      'openai-api: api.openai.com'):
             self.assertIn(text, result.stdout)
         self.assertLess(result.stdout.index('CODEX_CONTAINER_NETWORK'), result.stdout.index('CODEX_YOLO'))
+        self.assertIn('Host Podman delegation was removed: CODEX_CONTAINER_PODMAN=1 stops startup.', result.stdout)
         self.assertFalse(self.log.exists())
 
-    def test_yolo_case_insensitive_and_delegation_independent(self):
-        for shell, access, value in itertools.product((False, True), ('0', '1'), TRUE + FALSE):
-            with self.subTest(shell=shell, access=access, value=value):
+    def test_yolo_case_insensitive_and_no_socket(self):
+        # Host Podman delegation was removed: no combination mounts a Podman socket.
+        for shell, value in itertools.product((False, True), TRUE + FALSE):
+            with self.subTest(shell=shell, value=value):
                 options = ['--container-shell'] if shell else []
-                result = self.run_wrapper(*options, 'exec', 'prompt with spaces', '',
-                                          CODEX_YOLO=value, CODEX_CONTAINER_PODMAN=access)
+                result = self.run_wrapper(*options, 'exec', 'prompt with spaces', '', CODEX_YOLO=value)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 create = self.agent_create()
                 self.assertEqual(BYPASS in create, not shell and value in TRUE)
-                self.assertEqual('CONTAINER_HOST=unix:///run/podman/podman.sock' in create, access == '1')
+                self.assertFalse(any('podman.sock' in a for a in create))
                 expected = ['exec', 'prompt with spaces', '']
                 if not shell and value in TRUE:
                     expected.insert(0, BYPASS)
@@ -116,16 +111,16 @@ class WrapperTests(unittest.TestCase):
                 self.assertIn('CODEX_YOLO', result.stderr)
                 self.assertFalse(any(c[0] in ('build', 'create') for c in self.calls()))
 
-    def test_permissions_independent_and_exact_opt_in(self):
-        for access, yolo in itertools.product(('', '0', '1', 'true', 'yes', 'unexpected'), ('0', '1')):
-            with self.subTest(access=access, yolo=yolo):
-                result = self.run_wrapper('exec', 'a prompt', '', CODEX_YOLO=yolo, CODEX_CONTAINER_PODMAN=access)
+    def test_permissions_and_hardening_independent_of_yolo(self):
+        # The leftover CODEX_CONTAINER_PODMAN opt-in is refused by the shared core
+        # (tests/test_launcher.py); here only the bypass hook varies.
+        for yolo in ('0', '1'):
+            with self.subTest(yolo=yolo):
+                result = self.run_wrapper('exec', 'a prompt', '', CODEX_YOLO=yolo)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 create = self.agent_create()
-                # Delegation is an exact opt-in: only the value 1 enables it.
-                delegated = access == '1'
                 self.assertEqual(BYPASS in create, yolo == '1')
-                self.assertEqual('CONTAINER_HOST=unix:///run/podman/podman.sock' in create, delegated)
+                self.assertFalse(any('podman.sock' in a for a in create))
                 self.assertEqual(create[-3:], ['exec', 'a prompt', ''])
                 self.assertNotIn('--privileged', create)
                 self.assertEqual([a for a in create if a.startswith('--security-opt')],
@@ -169,7 +164,7 @@ class RestrictedTests(WrapperTests):
         shutil.copyfile(ROOT / 'agent/policies/default.json', self.policy)
         self.runtime = self.base / 'runtime'
         self.runtime.mkdir(mode=0o700)
-        self.restricted = {'CODEX_CONTAINER_PODMAN': '', 'OPENAI_API_KEY': 'host-key', 'FAKE_NETWORK': '1',
+        self.restricted = {'OPENAI_API_KEY': 'host-key', 'FAKE_NETWORK': '1',
                            'FAKE_INFO': 'true linux true', 'CONTAINER_HOST': 'unix:///run/service.sock'}
 
     def run_offline(self, *args, **env):
@@ -239,8 +234,7 @@ class RestrictedTests(WrapperTests):
                 self.assertNotIn(BYPASS, create)
 
     def test_qualification_probe_receives_no_codex_arguments(self):
-        control = self.wrapper.parent / 'network/control.py'
-        control.write_text(control.read_text() + "if args[0]=='qualification-input': print('f'*32+' 0')\n")
+        # The shared synthetic installation's control answers qualification-input.
         result = self.run_offline('--container-qualify-probe', CODEX_YOLO='1')
         self.assertEqual(result.returncode, 0, result.stderr)
         create = self.agent_create()
@@ -251,8 +245,8 @@ class RestrictedTests(WrapperTests):
 
     # The unrestricted cases of the parent class run once, there.
     test_help_documents_the_bypass_and_the_provider_hosts = None
-    test_yolo_case_insensitive_and_delegation_independent = None
-    test_permissions_independent_and_exact_opt_in = None
+    test_yolo_case_insensitive_and_no_socket = None
+    test_permissions_and_hardening_independent_of_yolo = None
     test_unrestricted_codex_keeps_its_own_sandbox = None
     test_unrestricted_api_key_only_by_explicit_name = None
     test_shell_mode_receives_no_codex_arguments = None

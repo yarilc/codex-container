@@ -28,7 +28,8 @@ sandbox-ref-28 sandbox-ref-36` gave the proposal's file plan. It also printed:
   `--network-feasibility`, `--guard` and `--network`, all in full.
 - **Preparation:** the engine image, with `localhost/codex-cli:latest` and
   `localhost/codex-guard-toolchain:development` as the images needed.
-- **Manual step:** the Windows validation script.
+- **Manual step:** the Windows validation script. This change does not run it
+  as validation (decision 7).
 - **19 review lines.** Two are hand-written lists made stale by added files:
   - `AGENTS.md:39`, the list of shared tests;
   - `tests/test_network_runtime.py:58-59`, the files the network fixture copies
@@ -75,9 +76,9 @@ The runtime image's build context is `Containerfile`, `.containerignore`,
 **Goals:**
 - Codex runs on the `sandbox-ref-36` shared files. Its tests, documentation
   and specs no longer describe delegation.
-- The operator validates the adoption with one runner line on WSL. The runner
-  writes full logs to one archive. Two further steps follow: the Windows
-  script and one real session.
+- The operator validates the adoption with development tests only: one runner
+  line on WSL, which writes full logs to one archive, and Codex's setup
+  wrapper module on the host.
 
 **Non-Goals:**
 - No porting of the reference's systemd and cgroup delegation runtime cases,
@@ -90,6 +91,8 @@ The runtime image's build context is `Containerfile`, `.containerignore`,
   Codex was validated on WSL.
 - No fix of `tools/propagate.py` here. It belongs to `sandbox-container` (see
   Risks).
+- No validation in the final environments: no installation update and no real
+  session. A defect found after the release gets its own change.
 
 ## Decisions
 
@@ -193,8 +196,11 @@ The runtime image's build context is `Containerfile`, `.containerignore`,
      also takes the reference's "Leftover delegation opt-in is refused".
    - **New capability:** `session-container-engine` is the reference's main
      spec, with `CODEX_CONTAINER_TOOLCHAINS`.
-   - **Known warning:** the strict check warns that "Fixed engine hardening
-     exceptions" is over 500 characters, as in the reference and Claude.
+   - **Known warnings:** the strict check of the change warns that "Fixed
+     engine hardening exceptions" is over 500 characters, as in the reference
+     and Claude. After the sync, seven more requirements of Codex's main specs
+     are over 500 characters, because they take the reference's text, which is
+     over 500 characters there too (task 2.7).
    - **Rejected:** adding the reference's `container-launcher` beside
      `container-session`. It would duplicate a dozen Codex requirements under
      other names.
@@ -222,7 +228,7 @@ The runtime image's build context is `Containerfile`, `.containerignore`,
    - **`docs/setup.md`:** no delegation question, schema 3 preferences and the
      engine image.
 
-7. **Validation: one runner line on WSL, then two operator steps.**
+7. **Validation: development tests only, on WSL.**
    - **Runner:** from `sandbox-container` on WSL, beside the native clone on
      the branch, the operator runs `bash tools/adoption-run.sh
      ../codex-container sandbox-ref-28 sandbox-ref-36`. The runner checks the
@@ -231,13 +237,17 @@ The runtime image's build context is `Containerfile`, `.containerignore`,
    - **Sample image:** the pinned alpine sample image must be in the engine
      first. Otherwise `SessionEngineTests` skips with "prepare …", which the
      runner marks `NOT PREPARED` and fails.
-   - **Windows:** the operator runs `.\tools\windows-validate.ps1` with the
-     Windows checkout on the branch, on Windows PowerShell 5.1. It covers the
-     changed bootstrap and a session with library images in the Podman
-     machine.
-   - **Real use:** on WSL, the operator reruns `codex-container
-     --container-setup` from the branch and opens one session with library
-     images.
+   - **Codex's setup wrapper module:** no runner mode runs
+     `tests/test_setup_wrapper.py`, so the same line runs it on the host's
+     Python, with `SANDBOX_TEST_TMPDIR` on private storage.
+   - **Not validation:** the operator's installation and real use. The engine
+     path of a session is covered by `SessionEngineTests` in the default
+     runtime mode. A defect found after the release gets its own change.
+   - **Windows entry:** the shared Windows modules check the entry's logic,
+     but development cannot reproduce the entry against a real Podman machine
+     faithfully. The record documents this as a risk of the release, with
+     its smoke test: `.\tools\windows-validate.ps1` with the updated
+     installation, on Windows PowerShell 5.1.
    - **Cost:** the tag touches every component, so this is the full matrix
      on one host, about an hour of suites. It replaces the two-host matrix of
      earlier adoptions and three separate adoptions.
@@ -262,8 +272,15 @@ The runtime image's build context is `Containerfile`, `.containerignore`,
   list lacks, before those three adopt.
 - **[Trade-off] The systemd cases run only in the reference.** → As for
   Claude: Codex adds only names to the shared engine.
-  `SessionEngineTests`, the qualification probe and the Windows script
-  exercise Codex's own engine path.
+  `SessionEngineTests` and the qualification probe exercise Codex's own
+  engine path.
+- **[Risk] The Windows entry is not run against a real Podman machine.** →
+  The release record names the risk and the smoke test,
+  `tools/windows-validate.ps1`. A defect it finds gets its own change.
+- **[Trade-off] The reference's propagation guide still maps
+  `launcher/windows/` to a manual Windows step.** → This change follows the
+  rule of development tests only. A reference change can align
+  `docs/propagation.md` and the tool's checklist.
 
 ## Migration Plan
 
@@ -272,7 +289,8 @@ The runtime image's build context is `Containerfile`, `.containerignore`,
    - rerun `codex-container --container-setup`. It builds the engine image,
      migrates saved delegation and requalifies restricted installations;
    - add the images their tests need with `--container-toolchain add`;
-   - unset `CODEX_CONTAINER_PODMAN`.
+   - unset `CODEX_CONTAINER_PODMAN`;
+   - on Windows, run the smoke test that the record names after updating.
 3. **Rollback:** point `current` back to the previous release, as
    `docs/setup.md` describes. That release keeps its schema 2 preferences.
    Setup from the old `main` refuses the schema 3 file of the new release.
