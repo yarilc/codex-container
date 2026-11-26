@@ -168,3 +168,4 @@
 - A reference change in `sandbox-container` that aligns `docs/propagation.md` and the tool's checklist with the rule of development tests only: `launcher/windows/` maps to a release risk with its smoke test instead of a manual validation step.
 - A reference change in `sandbox-container`: when the runner offers `--shared`, the checklist also names the changed shared modules that the runner's list lacks. It should come before Antigravity, OpenCode and Pi adopt `sandbox-ref-36`, whose lists lack the same four modules.
 - Antigravity, OpenCode and Pi adopt `sandbox-ref-36` from `sandbox-ref-28`, with this change as their model.
+  Their `test_wrapper.py` probe case appends a second `qualification-input` answer to the synthetic control, which answers it itself since `sandbox-ref-34`. As in Codex, the case drops the append.

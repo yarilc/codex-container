@@ -234,8 +234,7 @@ class RestrictedTests(WrapperTests):
                 self.assertNotIn(BYPASS, create)
 
     def test_qualification_probe_receives_no_codex_arguments(self):
-        control = self.wrapper.parent / 'network/control.py'
-        control.write_text(control.read_text() + "if args[0]=='qualification-input': print('f'*32+' 0')\n")
+        # The shared synthetic installation's control answers qualification-input.
         result = self.run_offline('--container-qualify-probe', CODEX_YOLO='1')
         self.assertEqual(result.returncode, 0, result.stderr)
         create = self.agent_create()
