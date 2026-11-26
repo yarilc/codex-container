@@ -1553,3 +1553,151 @@ Notes:
 
 The installed launcher core, setup and guard change, so installations rerun
 `--container-setup`.
+
+## Adoption of `sandbox-ref-36`: 2026-11-26
+
+Change `adopt-sandbox-ref-36`, from `sandbox-ref-28` directly. It takes in
+`sandbox-ref-29` to `sandbox-ref-36`:
+- host Podman delegation is replaced by a session container engine: sessions
+  never receive the host Podman API, and a session whose toolchain library
+  holds images gets a private rootless engine;
+- toolchains are provisioned by catalog name, without maintenance consent;
+- the engine's chroot capability, its `-immutable` base pin and engine labels
+  read on every Podman version;
+- a restricted session's interfaces are checked in its network namespace;
+- the process rlimit is set inside each container, by its first process;
+- the runtime test portability fixes;
+- systemd in nested containers, and the engine image's capability label.
+
+Copied from `sandbox-container` tag `sandbox-ref-36` (commit `ce2c9d2`):
+- updated: `launcher/core.sh`, `launcher/windows/bootstrap.sh`,
+  `launcher/windows/core.ps1`, `network/README.md`,
+  `network/agent_budgets.py`, `network/agent_profile.py`,
+  `network/proxy_hardening.py`, `network/qualification_probe.py`,
+  `network/qualification_records.py`, `network/qualify.py`,
+  `network/session.py`, `setup/common.py`, `setup/launch.py`,
+  `setup/setup.py`, `setup/smoke.py`, `setup/toolchains.py`,
+  `tests/fake_podman.py`, `tests/guard_runtime_fixture.py`,
+  `tests/network_fixture.py`, `tests/test_alignment.py`,
+  `tests/test_guard.py`, `tests/test_launcher.py`,
+  `tests/test_network_feasibility.py`, `tests/test_qualification.py`,
+  `tests/test_session.py`, `tests/test_setup.py`, `tests/test_toolchains.py`,
+  `tests/test_windows_bootstrap.py` and `tests/windows/shim_tests.ps1`;
+- added: the eight `launcher/engine/` files, `setup/engine.py`, the six
+  `setup/toolchain-catalog/` entries, `tests/guard_terminal_probe.py` and
+  `tests/test_engine.py`.
+
+The `tests/test_reference_copy.py` manifest moved to the tag. The thin Windows
+entry, `.gitattributes` and the runtime image's build context (`Containerfile`,
+`.containerignore`, `network/relay.py`, `network/mux.py`) are unchanged.
+
+Codex's own changes, with Claude's adoptions of the same range as the model:
+- `tests/test_wrapper.py`: the delegation cases check that no combination
+  mounts a Podman socket, the help names the removal, and the permission case
+  varies only the bypass. The refusal of a leftover `CODEX_CONTAINER_PODMAN=1`
+  stays in the shared `tests/test_launcher.py`;
+- `tests/test_runtime.py`: the leftover opt-in is refused, the remapped-socket
+  case runs without delegation, the child bind case is gone, and the
+  per-container process rlimit case and the four `SessionEngineTests` cases
+  are added;
+- `tests/test_network_runtime.py`: the fixture installs the engine from
+  `engine.INPUTS` and the toolchain catalog; the leftover opt-in and offline
+  engine cases, the proxy budget rule and its crowd case, and the portable
+  terminal case are added. The interrupted-creation case waits up to 60 s for
+  its interception and 25 s for the interrupted client;
+- `tests/test_setup_wrapper.py` and `tests/test_setup_runtime.py`: Claude's
+  changes (no delegation question, the real profile, the engine, toolchain and
+  proxy setup tags);
+- `tests/run-runtime.sh`: the socket comes from a Unix `CONTAINER_HOST` or the
+  runtime directory, without the delegation override. `--shared` gains
+  `test_engine`, `test_toolchains`, `test_windows_bootstrap` and
+  `test_windows_enter`, so it runs every shared module except `test_setup`;
+- `README.md`, `AGENTS.md` and `docs/setup.md`: the delegation sections give
+  way to the launch service, the session engine, the container tests,
+  toolchains on Windows and the schema 3 migration.
+
+Two Codex test defects that the WSL run found were fixed on the branch:
+- `f1bef8c`: `test_qualification_probe_receives_no_codex_arguments` appended a
+  second `qualification-input` answer to the synthetic control, which answers
+  it itself since `sandbox-ref-34`. The control printed two lines, and the
+  session helper refused them ("invalid fixed qualification input");
+- `da0285c`: `tests/test_setup_wrapper.py` set no `XDG_RUNTIME_DIR`, so
+  setup's default endpoint was the host's own
+  `/run/user/1000/podman/podman.sock`. With that socket present, the managed
+  rerun case probed it through the fake podman and failed its no-call check.
+  The fixture now gives every case an empty private runtime directory.
+
+### Repository checks in the development environment (task 2.8)
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment tests.test_engine tests.test_toolchains tests.test_image_pins tests.test_wrapper tests.test_setup_wrapper` | 141 tests, 74 failures and 36 errors, all in `test_toolchains`, `test_wrapper` and `test_setup_wrapper` with "Unsafe protected path" or "state directory must be private": this environment's storage refuses `chmod` (drvfs, mode 777). `test_engine`, `test_image_pins` and the copy and alignment tests passed. The three modules passed on WSL (task 3.1) |
+| The runtime suites without an engine | `test_runtime` (21 tests) and `test_network_runtime` (27 tests) skipped |
+| `ast` parse of the changed test modules, `bash -n tests/run-runtime.sh`, `git diff --check` | Passed |
+| `openspec validate adopt-sandbox-ref-36 --strict` | Only the inherited warning "Fixed engine hardening exceptions" (over 500 characters, as in the reference) |
+
+### WSL (task 3.1)
+
+The operator ran `bash tools/adoption-run.sh ../codex-container
+sandbox-ref-28 sandbox-ref-36` from `sandbox-container` on WSL2 x86_64
+`6.18.58.1-microsoft-standard-WSL2`:
+- Podman 4.9.3 with crun 1.14.1, the `systemd` manager with
+  `[cpu memory pids]`;
+- 117 GB free on `/`, Python 3.12.3.
+
+The checkout was a native clone of branch `adopt-sandbox-ref-36` at `4ee25bd`,
+beside the reference checkout. The runtime image `localhost/codex-cli:latest`
+(`8dbc6c66b85c`, as built in the `sandbox-ref-28` adoption), the guard
+toolchain `localhost/codex-guard-toolchain:development` (`101d7cadcd1c`) and
+the pinned alpine sample image were present. The runner built
+`localhost/codex-cli-engine:latest` with `podman build --pull=never`:
+`5f8a47ee207e`, the engine image that the reference and Claude built from
+`sandbox-ref-36` on this host. Its `io.containers.capabilities` label reads
+`SETUID,SETGID,SYS_CHROOT,CHOWN`.
+
+| Entry | First run (`4ee25bd`, 72 minutes) | Rerun |
+| --- | --- | --- |
+| `bash tests/run-runtime.sh --shared` | 412 tests, 35 skipped, 4 failures in 710 s: the timing-sensitive shared `test_lifetime_notice_preserves_status` (boundary attempts 5 to 7) and `test_ignored_signals_force_owned_removal` (`INT`, 1.9 s against 3.5 s) | `--only shared,wrapper` at `f1bef8c`: passed, 412 tests, 35 skipped, in 517 s |
+| `bash tests/run-runtime.sh --setup` | Passed: 93 tests | |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests. The 98 image tags were identical before and after the mode | |
+| `bash tests/run-runtime.sh --qualification` | Passed: 34 tests | |
+| `bash tests/run-runtime.sh --wrapper` | 124 tests, 1 skipped, 2 failures in 934 s: `test_ignored_signals_force_owned_removal` (`INT`, 2.1 s) and `test_qualification_probe_receives_no_codex_arguments` (fixed in `f1bef8c`) | Passed: 124 tests, 1 skipped, in 515 s |
+| `bash tests/run-runtime.sh` | Passed: 21 tests, 2 skipped: `test_process_rlimit_counts_per_container` and `test_engine_process_rlimit_counts_per_container`, because the engine does not use the process rlimit fallback. The other three `SessionEngineTests` cases passed with the new engine image | |
+| `bash tests/run-runtime.sh --network-feasibility` | Passed: 1 test | |
+| `bash tests/run-runtime.sh --guard` | Passed: 25 tests, 1 skipped (`--guard-idle`), the terminal tests included | |
+| `bash tests/run-runtime.sh --network` | Passed: 27 tests in 1360 s, 2 skipped: the proxy crowd case (the engine does not use the process rlimit fallback) and the external `developers.openai.com` check. The terminal case and `test_interrupted_and_failed_creation_recovers_both_roles` passed | |
+| `python3 -m unittest tests.test_setup_wrapper -v` (host Python, `SANDBOX_TEST_TMPDIR` on a private directory) | 9 tests, 1 failure: `test_managed_rerun_reviews_saved_defaults_without_inheriting_launch_values` (fixed in `da0285c`) | At `da0285c`: passed, 9 tests |
+
+The 35 skips of `--shared` are the cases that its container cannot run, which
+other modes ran: the two sibling-checkout checks, the drive-root case, seven
+qualification runtime cases (`--qualification`), 24 guard cases (`--guard`)
+and the feasibility case (`--network-feasibility`). The first run's timing
+failures are the shared tests already recorded as timing-sensitive under load
+in the reference and in Antigravity, OpenCode and Pi; the rerun ran a third
+faster. No log contains `Capabilities requested` or `level=error`.
+
+### Release risk: the Windows entry
+
+`launcher/windows/` changed, and development cannot reproduce the entry
+against a real Podman machine faithfully. The shared Windows modules passed in
+`--shared`; the entry was not run on a Windows host. The smoke test after the
+release, with the updated installation, is
+`.\tools\windows-validate.ps1 -Checkout <the Windows checkout>` from
+`sandbox-container`, on Windows PowerShell 5.1. It should report no failed
+case, the refusal of saved delegation by the bootstrap, and a passing
+"Session with library images". A defect it finds gets its own change.
+
+### Not run
+
+- The Rocky 9 lab host: one host is the rule (`docs/propagation.md`, step 3).
+  The reference ran its suites on WSL and on the Rocky 9 lab host before
+  tagging (`sandbox-container` record "Reference tag `sandbox-ref-36`").
+- The systemd runtime cases, the systemd sample recipe and its pin check stay
+  in the reference. Their evidence is the reference's
+  `test_systemd_runs_in_nested_containers` and
+  `test_engine_cgroup_delegation_in_sessions`, which passed on both hosts.
+- The runner from inside a Codex session.
+- Installations and real use: not part of the validation.
+
+The installed launcher core, setup and guard change, and setup builds the
+engine image, so installations rerun `--container-setup`.

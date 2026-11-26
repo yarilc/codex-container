@@ -120,7 +120,7 @@
 
 ## 3. Development validation on WSL
 
-- [ ] 3.1 Have the operator run the adoption runner on WSL (design decision 7).
+- [x] 3.1 Have the operator run the adoption runner on WSL (design decision 7).
   - **Preparation:**
     - in the native clones, `sandbox-container` is on `main` and `codex-container` is on `adopt-sandbox-ref-36`;
     - `localhost/codex-cli:latest` and `localhost/codex-guard-toolchain:development` exist;
